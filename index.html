@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Controle de Almoxarifado</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #F5F3EC; font-family: 'IBM Plex Sans', sans-serif; }
+  #root { max-width: 1100px; margin: 0 auto; padding: 20px; }
+  ::placeholder { color: #7A7568; opacity: 0.7; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid #F2B705; outline-offset: 1px; }
+</style>
+</head>
+<body>
+
+<div id="root">
+  <div style="font-family: 'IBM Plex Mono', monospace; color:#7A7568; padding: 40px; text-align:center;">carregando…</div>
+</div>
+
+<!-- ====== CONFIGURE AQUI ====== -->
+<script>
+  window.SUPABASE_URL = "https://anypxsjelqwwekkdhlab.supabase.co/rest/v1/";
+  window.SUPABASE_ANON_KEY = "sb_publishable_t7C4iPwbN-1zANNLEouHvQ_oHKSb6m6";
+</script>
+<!-- ============================ -->
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const supabase = window.supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+const CAT_LABEL = { insumos: "Insumos", limpeza: "Limpeza" };
+const LOW_STOCK_THRESHOLD = 5;
+
+function formatBRL(v) {
+  return "R$ " + (v || 0).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function formatDateBR(iso) {
+  if (!iso) return "-";
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function App() {
+  const [products, setProducts] = useState(null);
+  const [movements, setMovements] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [toast, setToast] = useState("");
+
+  const [activeCat, setActiveCat] = useState("todos");
+  const [search, setSearch] = useState("");
+
+  const [formOpen, setFormOpen] = useState(false);
+  const [tipo, setTipo] = useState("entrada");
+  const [codigoSel, setCodigoSel] = useState("");
+  const [qtd, setQtd] = useState("");
+  const [valor, setValor] = useState("");
+  const [nf, setNf] = useState("");
+  const [dataMov, setDataMov] = useState(todayISO());
+
+  const [newProdOpen, setNewProdOpen] = useState(false);
+  const [npNome, setNpNome] = useState("");
+  const [npCat, setNpCat] = useState("insumos");
+
+  async function loadAll() {
+    const [{ data: p, error: pe }, { data: m, error: me }] = await Promise.all([
+      supabase.from("products").select("*"),
+      supabase.from("movements").select("*").order("data", { ascending: false }),
+    ]);
+    if (pe || me) {
+      setErr("Não foi possível conectar ao banco. Confira a URL e a chave do Supabase no arquivo.");
+      return;
+    }
+    setProducts(p || []);
+    setMovements(m || []);
+  }
+
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      await loadAll();
+      setLoading(false);
+    })();
+
+    const channel = supabase
+      .channel("almox-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "movements" }, () => loadAll())
+      .on("postgres_changes", { event: "*", schema: "public", table: "products" }, () => loadAll())
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+  }, []);
+
+  const saldoByCodigo = useMemo(() => {
+    const map = {};
+    (movements || []).forEach((m) => {
+      const delta = m.tipo === "entrada" ? Number(m.quantidade) : -Number(m.quantidade);
+      map[m.codigo] = (map[m.codigo] || 0) + delta;
+    });
+    return map;
+  }, [movements]);
+
+  const lastValorByCodigo = useMemo(() => {
+    const map = {};
+    (movements || []).forEach((m) => {
+      if (m.tipo === "entrada" && m.valor) map[m.codigo] = Number(m.valor);
+    });
+    return map;
+  }, [movements]);
+
+  const filteredProducts = useMemo(() => {
+    if (!products) return [];
+    return products
+      .filter((p) => activeCat === "todos" || p.categoria === activeCat)
+      .filter((p) =>
+        search.trim() === "" ||
+        p.produto.toLowerCase().includes(search.toLowerCase()) ||
+        String(p.codigo).includes(search)
+      )
+      .sort((a, b) => a.codigo - b.codigo);
+  }, [products, activeCat, search]);
+
+  const recentMovements = useMemo(() => {
+    if (!movements) return [];
+    return movements
+      .filter((m) => activeCat === "todos" || m.categoria === activeCat)
+      .slice(0, 25);
+  }, [movements, activeCat]);
+
+  const stats = useMemo(() => {
+    if (!products) return { total: 0, baixo: 0, valorTotal: 0 };
+    let baixo = 0, valorTotal = 0;
+    products.forEach((p) => {
+      const s = saldoByCodigo[p.codigo] || 0;
+      if (s <= LOW_STOCK_THRESHOLD) baixo += 1;
+      valorTotal += s * (lastValorByCodigo[p.codigo] || 0);
+    });
+    return { total: products.length, baixo, valorTotal };
+  }, [products, saldoByCodigo, lastValorByCodigo]);
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(""), 2600);
+  }
+
+  async function handleSubmitMovement(e) {
+    e.preventDefault();
+    const prod = products.find((p) => p.codigo === Number(codigoSel));
+    if (!prod || !qtd || Number(qtd) <= 0) return;
+    const q = Number(qtd);
+    const v = valor ? Number(valor) : 0;
+
+    if (tipo === "saida") {
+      const saldoAtual = saldoByCodigo[prod.codigo] || 0;
+      if (q > saldoAtual) {
+        setErr(`Saldo insuficiente: ${prod.produto} tem ${saldoAtual} em estoque.`);
+        return;
+      }
+    }
+
+    setSaving(true);
+    const { error } = await supabase.from("movements").insert([{
+      data: dataMov,
+      tipo,
+      codigo: prod.codigo,
+      produto: prod.produto,
+      quantidade: q,
+      valor: v,
+      valor_total: Number((q * v).toFixed(2)),
+      nota_fiscal: nf,
+      categoria: prod.categoria,
+    }]);
+    setSaving(false);
+
+    if (error) {
+      setErr("Não foi possível salvar o lançamento.");
+      return;
+    }
+    await loadAll();
+    showToast(`${tipo === "entrada" ? "Entrada" : "Saída"} registrada: ${prod.produto}`);
+    setQtd(""); setValor(""); setNf(""); setCodigoSel(""); setErr("");
+    setFormOpen(false);
+  }
+
+  async function handleAddProduct(e) {
+    e.preventDefault();
+    if (!npNome.trim()) return;
+    const nextCodigo = Math.max(0, ...products.map((p) => p.codigo)) + 1;
+
+    setSaving(true);
+    const { error } = await supabase.from("products").insert([{
+      codigo: nextCodigo, produto: npNome.trim(), categoria: npCat,
+    }]);
+    setSaving(false);
+
+    if (error) {
+      setErr("Não foi possível salvar o produto.");
+      return;
+    }
+    await loadAll();
+    showToast(`Produto cadastrado: ${npNome.trim()}`);
+    setNpNome(""); setNewProdOpen(false);
+  }
+
+  if (loading) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 400 }}>
+        <div style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#7A7568", fontSize: 14 }}>carregando estoque…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={wrapStyle}>
+      <header style={headerStyle}>
+        <div>
+          <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, letterSpacing: "0.14em", color: "#8A6A00", textTransform: "uppercase" }}>
+            Controle de Almoxarifado
+          </div>
+          <h1 style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 28, margin: "4px 0 0", color: "#20242A", fontWeight: 700 }}>Estoque</h1>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button style={btnGhost} onClick={() => setNewProdOpen((v) => !v)}>+ produto</button>
+          <button style={btnPrimary} onClick={() => setFormOpen((v) => !v)}>+ lançamento</button>
+        </div>
+      </header>
+
+      {err && (
+        <div style={errBanner}>
+          <span>{err}</span>
+          <button style={{ background: "none", border: "none", cursor: "pointer", color: "inherit", fontWeight: 700 }} onClick={() => setErr("")}>×</button>
+        </div>
+      )}
+
+      <div style={statsRow}>
+        <StatCard label="produtos cadastrados" value={stats.total} />
+        <StatCard label="estoque baixo" value={stats.baixo} warn={stats.baixo > 0} />
+        <StatCard label="valor total em estoque" value={formatBRL(stats.valorTotal)} wide />
+      </div>
+
+      <div style={tabsRow}>
+        {["todos", "insumos", "limpeza"].map((c) => (
+          <button key={c} onClick={() => setActiveCat(c)} style={{ ...tabBtn, ...(activeCat === c ? tabBtnActive : {}) }}>
+            {c === "todos" ? "Todos" : CAT_LABEL[c]}
+          </button>
+        ))}
+        <input placeholder="buscar produto ou código…" value={search} onChange={(e) => setSearch(e.target.value)} style={searchInput} />
+      </div>
+
+      {newProdOpen && (
+        <form onSubmit={handleAddProduct} style={panelForm}>
+          <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, color: "#20242A", marginBottom: 10 }}>Novo produto</div>
+          <div style={formRow}>
+            <input placeholder="nome do produto" value={npNome} onChange={(e) => setNpNome(e.target.value)} style={{ ...input, flex: 2 }} required />
+            <select value={npCat} onChange={(e) => setNpCat(e.target.value)} style={{ ...input, flex: 1 }}>
+              <option value="insumos">Insumos</option>
+              <option value="limpeza">Limpeza</option>
+            </select>
+            <button type="submit" style={btnPrimary} disabled={saving}>salvar</button>
+          </div>
+        </form>
+      )}
+
+      {formOpen && (
+        <form onSubmit={handleSubmitMovement} style={panelForm}>
+          <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, color: "#20242A", marginBottom: 10 }}>Novo lançamento</div>
+          <div style={formRow}>
+            <div style={toggleGroup}>
+              <button type="button" onClick={() => setTipo("entrada")} style={{ ...toggleBtn, ...(tipo === "entrada" ? toggleBtnEntrada : {}) }}>entrada</button>
+              <button type="button" onClick={() => setTipo("saida")} style={{ ...toggleBtn, ...(tipo === "saida" ? toggleBtnSaida : {}) }}>saída</button>
+            </div>
+            <select value={codigoSel} onChange={(e) => setCodigoSel(e.target.value)} style={{ ...input, flex: 2 }} required>
+              <option value="">selecione o produto…</option>
+              {[...products].sort((a, b) => a.codigo - b.codigo).map((p) => (
+                <option key={p.codigo} value={p.codigo}>#{p.codigo} · {p.produto} (saldo {saldoByCodigo[p.codigo] || 0})</option>
+              ))}
+            </select>
+          </div>
+          <div style={formRow}>
+            <input type="number" min="0.01" step="0.01" placeholder="quantidade" value={qtd} onChange={(e) => setQtd(e.target.value)} style={input} required />
+            <input type="number" min="0" step="0.01" placeholder="valor unitário (opcional)" value={valor} onChange={(e) => setValor(e.target.value)} style={input} />
+            <input type="date" value={dataMov} onChange={(e) => setDataMov(e.target.value)} style={input} />
+          </div>
+          <div style={formRow}>
+            <input placeholder="nota fiscal (opcional)" value={nf} onChange={(e) => setNf(e.target.value)} style={{ ...input, flex: 1 }} />
+            <button type="submit" style={btnPrimary} disabled={saving}>registrar</button>
+          </div>
+        </form>
+      )}
+
+      <div style={mainGrid}>
+        <section>
+          <div style={sectionLabel}>Prateleira <span style={{ color: "#7A7568", fontWeight: 400 }}>({filteredProducts.length})</span></div>
+          <div style={cardGrid}>
+            {filteredProducts.map((p) => {
+              const saldo = saldoByCodigo[p.codigo] || 0;
+              const low = saldo <= LOW_STOCK_THRESHOLD;
+              return (
+                <div key={p.codigo} style={{ ...binTag, ...(low ? binTagLow : {}) }}>
+                  <div style={binTagNotch} />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <span style={codeBadge}>#{String(p.codigo).padStart(3, "0")}</span>
+                    <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10, color: "#7A7568", textTransform: "uppercase" }}>{CAT_LABEL[p.categoria]}</span>
+                  </div>
+                  <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 600, fontSize: 14.5, color: "#20242A", margin: "8px 0 10px", lineHeight: 1.25, minHeight: 36 }}>{p.produto}</div>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                    <span style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 26, color: low ? "#B0432B" : "#20242A" }}>{saldo}</span>
+                    <span style={{ fontSize: 11, color: "#7A7568" }}>em estoque</span>
+                  </div>
+                  {low && <div style={lowBadge}>estoque baixo</div>}
+                </div>
+              );
+            })}
+            {filteredProducts.length === 0 && <div style={{ color: "#7A7568", fontSize: 14, padding: "24px 0" }}>Nenhum produto encontrado.</div>}
+          </div>
+        </section>
+
+        <section>
+          <div style={sectionLabel}>Histórico recente</div>
+          <div style={logPanel}>
+            {recentMovements.map((m) => (
+              <div key={m.id} style={logRow}>
+                <span style={{ ...logDot, background: m.tipo === "entrada" ? "#2F6F4E" : "#B0432B" }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, color: "#20242A", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.produto}</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, color: "#7A7568" }}>{formatDateBR(m.data)} {m.nota_fiscal ? `· NF ${m.nota_fiscal}` : ""}</div>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 13, fontWeight: 700, color: m.tipo === "entrada" ? "#2F6F4E" : "#B0432B" }}>
+                    {m.tipo === "entrada" ? "+" : "−"}{m.quantidade}
+                  </div>
+                  {m.valor_total > 0 && <div style={{ fontSize: 11, color: "#7A7568" }}>{formatBRL(m.valor_total)}</div>}
+                </div>
+              </div>
+            ))}
+            {recentMovements.length === 0 && <div style={{ color: "#7A7568", fontSize: 14, padding: "16px 0" }}>Sem movimentações ainda.</div>}
+          </div>
+        </section>
+      </div>
+
+      <footer style={footerStyle}>
+        <span>MVP · conectado ao Supabase · atualiza em tempo real para todos</span>
+      </footer>
+
+      {toast && <div style={toastStyle}>{toast}</div>}
+    </div>
+  );
+}
+
+function StatCard({ label, value, warn, wide }) {
+  return (
+    <div style={{ ...statCard, ...(wide ? { flex: 1.4 } : {}), ...(warn ? { borderColor: "#B0432B" } : {}) }}>
+      <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 10.5, color: "#7A7568", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 22, color: warn ? "#B0432B" : "#20242A", marginTop: 4 }}>{value}</div>
+    </div>
+  );
+}
+
+const wrapStyle = { fontFamily: "'IBM Plex Sans', sans-serif" };
+const headerStyle = { display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12, marginBottom: 16 };
+const btnPrimary = { background: "#20242A", color: "#fff", border: "none", borderRadius: 8, padding: "10px 16px", fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 13, cursor: "pointer" };
+const btnGhost = { background: "transparent", color: "#20242A", border: "1.5px solid #DDD7C6", borderRadius: 8, padding: "9px 16px", fontFamily: "'IBM Plex Sans', sans-serif", fontWeight: 600, fontSize: 13, cursor: "pointer" };
+const errBanner = { background: "#FBEAE4", border: "1px solid #B0432B", color: "#7A2E1B", borderRadius: 8, padding: "10px 14px", fontSize: 13.5, marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" };
+const statsRow = { display: "flex", gap: 10, marginBottom: 18, flexWrap: "wrap" };
+const statCard = { background: "#fff", border: "1px solid #DDD7C6", borderRadius: 10, padding: "12px 16px", flex: 1, minWidth: 140 };
+const tabsRow = { display: "flex", gap: 8, alignItems: "center", marginBottom: 16, flexWrap: "wrap" };
+const tabBtn = { background: "transparent", border: "1px solid #DDD7C6", borderRadius: 999, padding: "7px 16px", fontSize: 13, fontWeight: 600, color: "#7A7568", cursor: "pointer", fontFamily: "'IBM Plex Sans', sans-serif" };
+const tabBtnActive = { background: "#20242A", color: "#fff", borderColor: "#20242A" };
+const searchInput = { marginLeft: "auto", border: "1px solid #DDD7C6", borderRadius: 8, padding: "8px 12px", fontSize: 13, fontFamily: "'IBM Plex Sans', sans-serif", background: "#fff", minWidth: 200, color: "#20242A" };
+const panelForm = { background: "#fff", border: "1px solid #DDD7C6", borderRadius: 10, padding: 16, marginBottom: 18 };
+const formRow = { display: "flex", gap: 8, marginBottom: 8, flexWrap: "wrap" };
+const input = { border: "1px solid #DDD7C6", borderRadius: 8, padding: "9px 12px", fontSize: 13.5, fontFamily: "'IBM Plex Sans', sans-serif", color: "#20242A", background: "#FCFBF8", flex: 1, minWidth: 140 };
+const toggleGroup = { display: "flex", border: "1px solid #DDD7C6", borderRadius: 8, overflow: "hidden" };
+const toggleBtn = { border: "none", background: "#FCFBF8", padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", color: "#7A7568", fontFamily: "'IBM Plex Sans', sans-serif" };
+const toggleBtnEntrada = { background: "#2F6F4E", color: "#fff" };
+const toggleBtnSaida = { background: "#B0432B", color: "#fff" };
+const mainGrid = { display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 24, alignItems: "start" };
+const sectionLabel = { fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: 15, color: "#20242A", marginBottom: 10 };
+const cardGrid = { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(160px, 1fr))", gap: 10 };
+const binTag = { position: "relative", background: "#fff", border: "1px solid #DDD7C6", borderLeft: "4px solid #20242A", borderRadius: 6, padding: "12px 14px 14px" };
+const binTagLow = { borderLeft: "4px solid #B0432B" };
+const binTagNotch = { position: "absolute", top: -1, right: 14, width: 16, height: 8, background: "#F5F3EC", borderLeft: "1px solid #DDD7C6", borderRight: "1px solid #DDD7C6", borderBottom: "1px solid #DDD7C6", borderRadius: "0 0 4px 4px" };
+const codeBadge = { fontFamily: "'IBM Plex Mono', monospace", fontSize: 11, fontWeight: 700, color: "#8A6A00", background: "#FBF0C8", padding: "2px 6px", borderRadius: 4 };
+const lowBadge = { marginTop: 8, display: "inline-block", fontSize: 10, fontWeight: 700, color: "#B0432B", border: "1px solid #B0432B", borderRadius: 999, padding: "2px 8px", textTransform: "uppercase", letterSpacing: "0.04em" };
+const logPanel = { background: "#fff", border: "1px solid #DDD7C6", borderRadius: 10, padding: 6, maxHeight: 560, overflowY: "auto" };
+const logRow = { display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", borderBottom: "1px solid #F5F3EC" };
+const logDot = { width: 8, height: 8, borderRadius: "50%", flexShrink: 0 };
+const footerStyle = { marginTop: 22, paddingTop: 14, borderTop: "1px solid #DDD7C6", fontSize: 11.5, color: "#7A7568" };
+const toastStyle = { position: "fixed", bottom: 20, left: "50%", transform: "translateX(-50%)", background: "#20242A", color: "#fff", padding: "10px 18px", borderRadius: 8, fontSize: 13, fontFamily: "'IBM Plex Sans', sans-serif", boxShadow: "0 6px 20px rgba(0,0,0,0.25)", zIndex: 50 };
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
