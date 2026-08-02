@@ -26,13 +26,18 @@
   .sidebar-backdrop { display: block; position: fixed; inset: 0; background: rgba(15,23,42,0.5); z-index: 140; }
   .hamburger-btn { display: none; }
 
+  /* !important necessário: o estilo inline do componente define position/relative
+     e vence a regra normal do media query, então forçamos aqui */
   @media (max-width: 1023px) {
     .sidebar {
-      position: fixed; top: 0; left: 0; bottom: 0; z-index: 150;
-      transform: translateX(-100%);
+      position: fixed !important;
+      top: 0 !important; left: 0 !important; bottom: 0 !important;
+      width: 220px !important;
+      z-index: 150;
+      transform: translateX(-100%) !important;
       box-shadow: 4px 0 24px rgba(0,0,0,0.25);
     }
-    .sidebar.open { transform: translateX(0); }
+    .sidebar.open { transform: translateX(0) !important; }
     .hamburger-btn { display: inline-flex !important; }
   }
 
