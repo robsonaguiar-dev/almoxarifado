@@ -1216,7 +1216,7 @@ ${_}`}var Pt=class extends Error{constructor({message:e,code:t,cause:n,name:a}){
                       <th style=${{...ke,width:55}}>Cód.</th>
                       <th style=${ke}>Produto</th>
                       <th style=${{...ke,textAlign:"right",width:70}}>Sistema</th>
-                      <th style=${{...ke,textAlign:"right",width:96}}>
+                      <th style=${{...ke,textAlign:"right",width:128}}>
                         <span class="print-hide">Contagem física</span>
                         <span class="print-only">Contagem (some os itens)</span>
                       </th>
@@ -1238,14 +1238,14 @@ ${_}`}var Pt=class extends Error{constructor({message:e,code:t,cause:n,name:a}){
                             </span>
                             <span class="print-only">
                               <span style=${{display:"inline-flex",gap:3,justifyContent:"flex-end"}}>
-                                ${[1,2,3,4].map(()=>J`<span style=${{display:"inline-block",width:11,height:11,border:"1px solid #94A3B8",borderRadius:2}}></span>`)}
+                                ${[1,2,3,4].map(()=>J`<span style=${{display:"inline-block",width:24,height:11,border:"1px solid #94A3B8",borderRadius:2}}></span>`)}
                               </span>
                             </span>
                           </td>
                           <td style=${{...Ie,textAlign:"right",fontWeight:700,color:ne===null?"var(--ink-soft)":ne===0?"var(--success)":"var(--danger)"}}>
                             <span class="print-hide">${ne===null?"\u2014":ne>0?`+${ne}`:ne}</span>
                             <span class="print-only">
-                              <span style=${{display:"inline-block",width:42,height:11,border:"1px solid #94A3B8",borderRadius:2}}></span>
+                              <span style=${{display:"inline-block",width:56,height:11,border:"1px solid #94A3B8",borderRadius:2}}></span>
                             </span>
                           </td>
                         </tr>
