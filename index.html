@@ -1147,7 +1147,7 @@ ${_}`}var Pt=class extends Error{constructor({message:e,code:t,cause:n,name:a}){
 
     ${ks&&J`
       <div class="modal-backdrop-override" style=${Dn} onClick=${()=>Br(!1)}>
-        <div class="modal-card-override doc-print-area" style=${{...Fn,width:760}} onClick=${x=>x.stopPropagation()}>
+        <div class="modal-card-override doc-print-area" style=${{...Fn,width:860}} onClick=${x=>x.stopPropagation()}>
           <div class="print-hide" style=${Nn}>
             <span>Inventário #${mr?.numero} ${mr?.status==="fechado"?"(fechado)":""}</span>
             <button type="button" style=${an} onClick=${()=>Br(!1)}><${Ue} name="x" size=${16} /></button>
@@ -1203,7 +1203,14 @@ ${_}`}var Pt=class extends Error{constructor({message:e,code:t,cause:n,name:a}){
                   `}
                 </div>
 
-                <table style=${{...ha,marginTop:4}}>
+                <table style=${{...ha,marginTop:4,tableLayout:"fixed"}}>
+                  <colgroup>
+                    <col style=${{width:"70px"}} />
+                    <col />
+                    <col style=${{width:"90px"}} />
+                    <col style=${{width:"110px"}} />
+                    <col style=${{width:"80px"}} />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th style=${be}>Código</th>
@@ -1217,13 +1224,13 @@ ${_}`}var Pt=class extends Error{constructor({message:e,code:t,cause:n,name:a}){
                     ${zd.map(x=>{let O=Xt[x.id],G=O!==void 0&&O!=="",ne=G?Number(O)-x.saldo_sistema:null;return J`
                         <tr id=${"inv-item-"+x.codigo} style=${da}>
                           <td style=${{...ke,color:"var(--ink-soft)",fontVariantNumeric:"tabular-nums"}}>#${String(x.codigo).padStart(3,"0")}</td>
-                          <td style=${{...ke,fontWeight:500}}>${x.produto} <span style=${{...Sf,marginLeft:6}}>${Jr(x.categoria)}</span></td>
+                          <td style=${{...ke,fontWeight:500,whiteSpace:"normal",wordBreak:"break-word"}}>${x.produto} <span style=${{...Sf,marginLeft:6,whiteSpace:"nowrap"}}>${Jr(x.categoria)}</span></td>
                           <td style=${{...ke,textAlign:"right",color:"var(--ink-soft)"}}>${x.saldo_sistema} ${Zn(x.unidade)}</td>
                           <td style=${{...ke,textAlign:"right"}}>
                             <span class="print-hide">
-                              ${mr?.status==="aberto"?J`<input id=${"inv-input-"+x.codigo} type="number" step="0.01" value=${O??""} onInput=${Ie=>bf({...Xt,[x.id]:Ie.target.value})} style=${{...ot,width:90,textAlign:"right",padding:"6px 8px"}} placeholder="—" />`:J`${x.contagem_fisica??"\u2014"}`}
+                              ${mr?.status==="aberto"?J`<input id=${"inv-input-"+x.codigo} type="number" step="0.01" value=${O??""} onInput=${Ie=>bf({...Xt,[x.id]:Ie.target.value})} style=${{...ot,width:84,textAlign:"right",padding:"6px 8px"}} placeholder="—" />`:J`${x.contagem_fisica??"\u2014"}`}
                             </span>
-                            <span class="print-only" style=${{display:"inline"}}>${G?O:x.contagem_fisica??"\u2014"}</span>
+                            ${G?J`<span class="print-only">${O}</span>`:x.contagem_fisica!==null?J`<span class="print-only">${x.contagem_fisica}</span>`:J`<span class="print-only" style=${{minWidth:50,borderBottom:"1px solid #94A3B8"}}>&nbsp;</span>`}
                           </td>
                           <td style=${{...ke,textAlign:"right",fontWeight:700,color:ne===null?"var(--ink-soft)":ne===0?"var(--success)":"var(--danger)"}}>
                             ${ne===null?"\u2014":ne>0?`+${ne}`:ne}
