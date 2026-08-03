@@ -122,15 +122,11 @@
     th { font-size: 9.5px !important; padding: 5px 8px !important; background: #F1F5F9 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
     /* Documento único isolado (requisição, histórico de produto, análise em lote):
-       esconde o resto da tela e mostra só o documento.
-       IMPORTANTE: o modal normalmente usa position:fixed (pra centralizar na tela),
-       o que trava o conteúdo dentro de UMA página só e faz sobrepor/repetir quando
-       o relatório precisa de mais de uma folha impressa. Por isso, na impressão,
-       tiramos o modal desse "modo fixo" e deixamos ele fluir como texto normal —
-       assim o navegador consegue paginar corretamente em quantas folhas precisar. */
-    body:has(.doc-print-area) * { visibility: hidden; }
-    body:has(.doc-print-area) .doc-print-area,
-    body:has(.doc-print-area) .doc-print-area * { visibility: visible; }
+       remove o app inteiro DO FLUXO da página (display:none, não só invisível) —
+       assim não sobra espaço vazio empurrando o relatório pra uma página em branco.
+       O modal em si vira um bloco normal (não mais fixo/centralizado), pra poder
+       paginar em quantas folhas o conteúdo precisar, sem sobrepor entre páginas. */
+    body:has(.doc-print-area) .app-shell { display: none !important; }
     body:has(.doc-print-area) .modal-backdrop-override {
       position: static !important;
       display: block !important;
@@ -391,7 +387,7 @@ ${m}`}var Ft=class extends Error{constructor({message:e,code:t,cause:n,name:a}){
         <div style=${{fontSize:14,color:"var(--ink-soft)"}}>Carregando…</div>
       </div>
     `:te`
-    <div style=${OO}>
+    <div class="app-shell" style=${OO}>
       ${We&&te`<div class="sidebar-backdrop" onClick=${()=>Vt(!1)}></div>`}
       <aside class=${"sidebar print-hide"+(We?" open":"")} style=${RO}>
         <div style=${DO}>
