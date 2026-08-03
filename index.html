@@ -22,6 +22,18 @@
   tbody tr:hover { background: #F8FAFC; }
   #boot-msg { font-family: monospace; color:#64748B; padding: 40px; text-align:center; white-space: pre-wrap; }
 
+  /* remove a setinha nativa de incrementar/decrementar dos campos numéricos —
+     em campos estreitos ela fica em cima do texto e atrapalha clicar/ler.
+     Digitar o número continua funcionando normal. */
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type=number] {
+    -moz-appearance: textfield;
+  }
+
   .stat-card-clickable { transition: box-shadow .15s, transform .15s; }
   .stat-card-clickable:hover { box-shadow: 0 4px 14px rgba(0,0,0,0.08); transform: translateY(-1px); }
   .hover-row:hover { background: #F8FAFC; }
