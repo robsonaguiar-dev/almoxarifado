@@ -1,0 +1,44 @@
+name: Backup semanal do Supabase
+
+on:
+  schedule:
+    # toda segunda-feira às 06:00 UTC (03:00 horário de Brasília)
+    - cron: "0 6 * * 1"
+  workflow_dispatch: # também dá pra rodar manualmente pela aba "Actions" do GitHub
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v4
+
+      - name: Criar pasta de backup
+        run: mkdir -p backups
+
+      - name: Exportar cada tabela
+        env:
+          SUPABASE_URL: "https://anypxsjelqwwekkdhlab.supabase.co"
+          SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          TABELAS="products movements categorias unidades fornecedores requisicoes requisicao_itens inventarios inventario_itens perfis emprestimos"
+          for TABELA in $TABELAS; do
+            echo "Exportando $TABELA..."
+            curl -s "$SUPABASE_URL/rest/v1/$TABELA?select=*" \
+              -H "apikey: $SERVICE_KEY" \
+              -H "Authorization: Bearer $SERVICE_KEY" \
+              -o "backups/${TABELA}.json"
+          done
+
+      - name: Registrar data do backup
+        run: date -u "+%Y-%m-%d %H:%M UTC" > backups/ultimo_backup.txt
+
+      - name: Salvar no repositório
+        run: |
+          git config user.name "backup-bot"
+          git config user.email "backup-bot@users.noreply.github.com"
+          git add backups/
+          git diff --staged --quiet || git commit -m "Backup automático - $(date -u +%Y-%m-%d)"
+          git push
