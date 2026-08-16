@@ -2045,5 +2045,655 @@ xlsx/xlsx.mjs:
   (*! sheetjs (C) 2013-present SheetJS -- http://sheetjs.com *)
 */
 </script>
+<script type="module">
+// =====================================================================
+// MÓDULO: FROTA / MANUTENÇÃO
+// Anexado como app isolado — não compartilha escopo com o bundle acima.
+// Reaproveita a MESMA sessão de login (mesmo projeto Supabase = mesma
+// chave de storage no localStorage), então quem já está logado no
+// almoxarifado já está "logado" aqui também, sem pedir senha de novo.
+// =====================================================================
+import { h, render, Fragment } from 'https://esm.sh/preact@10.19.6';
+import { useState, useEffect, useMemo, useRef } from 'https://esm.sh/preact@10.19.6/hooks';
+import htm from 'https://esm.sh/htm@3.1.1';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.45.4';
+
+const html = htm.bind(h);
+const sf = createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+// ---------- helpers ----------
+function fmtDate(d) {
+  if (!d) return '-';
+  const [y, m, dd] = d.split('-');
+  return `${dd}/${m}/${y}`;
+}
+function fmtBRL(v) {
+  return 'R$ ' + (Number(v) || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function todayISO() {
+  return new Date().toISOString().slice(0, 10);
+}
+function normalize(s) {
+  return (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+}
+async function currentUserEmail() {
+  const { data } = await sf.auth.getUser();
+  return data?.user?.email || '';
+}
+
+const TIPOS_EQUIP = [
+  ['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'],
+  ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro'],
+];
+const STATUS_EQUIP = {
+  ativo: ['Ativo', '#15803D', '#F0FDF4'],
+  em_manutencao: ['Em manutenção', '#B45309', '#FFFBEB'],
+  inativo: ['Inativo', '#64748B', '#F1F5F9'],
+  baixado: ['Baixado', '#B91C1C', '#FEF2F2'],
+};
+const STATUS_MANUT = {
+  aberta: ['Aberta', '#B45309', '#FFFBEB'],
+  em_andamento: ['Em andamento', '#2563EB', '#EFF6FF'],
+  concluida: ['Concluída', '#15803D', '#F0FDF4'],
+  cancelada: ['Cancelada', '#B91C1C', '#FEF2F2'],
+};
+const TIPOS_MANUT = [['preventiva', 'Preventiva'], ['corretiva', 'Corretiva'], ['revisao', 'Revisão']];
+
+function Badge({ label, fg, bg }) {
+  return html`<span style=${{ fontSize: 11, fontWeight: 700, padding: '2px 9px', borderRadius: 999, color: fg, background: bg, whiteSpace: 'nowrap' }}>${label}</span>`;
+}
+
+// ---------- estilos (reaproveita as CSS vars já definidas em <body>) ----------
+const S = {
+  fab: { position: 'fixed', bottom: 22, right: 22, zIndex: 5000, display: 'flex', alignItems: 'center', gap: 8, background: 'var(--sidebar, #111827)', color: '#fff', border: 'none', borderRadius: 999, padding: '12px 18px 12px 14px', fontWeight: 700, fontSize: 13.5, fontFamily: "'Inter', sans-serif", cursor: 'pointer', boxShadow: '0 8px 24px rgba(0,0,0,0.25)' },
+  backdrop: { position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)', zIndex: 5001, display: 'flex', justifyContent: 'flex-end', fontFamily: "'Inter', sans-serif" },
+  panel: { background: '#fff', width: 720, maxWidth: '100%', height: '100%', overflowY: 'auto', boxShadow: '-10px 0 40px rgba(0,0,0,0.2)', display: 'flex', flexDirection: 'column' },
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid var(--border, #E2E8F0)', flexShrink: 0 },
+  title: { fontWeight: 700, fontSize: 16, color: 'var(--ink, #111827)' },
+  closeBtn: { background: 'none', border: 'none', cursor: 'pointer', fontSize: 18, color: 'var(--ink-soft, #64748B)', lineHeight: 1 },
+  tabs: { display: 'flex', gap: 4, background: 'var(--bg, #F1F5F9)', padding: 3, borderRadius: 8, margin: '14px 20px 0' },
+  tab: (active) => ({ flex: 1, border: 'none', background: active ? '#fff' : 'transparent', boxShadow: active ? '0 1px 2px rgba(0,0,0,0.06)' : 'none', padding: '8px 0', fontSize: 13, fontWeight: 600, color: active ? 'var(--ink, #111827)' : 'var(--ink-soft, #64748B)', cursor: 'pointer', borderRadius: 6, fontFamily: 'inherit' }),
+  content: { padding: 18, flex: 1, minHeight: 0 },
+  btnPrimary: { display: 'inline-flex', alignItems: 'center', gap: 6, background: 'var(--accent, #2563EB)', color: '#fff', border: 'none', borderRadius: 7, padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' },
+  btnGhost: { display: 'inline-flex', alignItems: 'center', gap: 6, background: '#fff', color: 'var(--ink, #111827)', border: '1px solid var(--border, #E2E8F0)', borderRadius: 7, padding: '8px 14px', fontWeight: 600, fontSize: 13, cursor: 'pointer', fontFamily: 'inherit' },
+  linkBtn: { background: 'none', border: 'none', color: 'var(--accent, #2563EB)', fontWeight: 600, fontSize: 12.5, cursor: 'pointer', fontFamily: 'inherit' },
+  input: { width: '100%', border: '1px solid var(--border, #E2E8F0)', borderRadius: 7, padding: '9px 11px', fontSize: 13.5, color: 'var(--ink, #111827)', fontFamily: 'inherit', background: '#fff', boxSizing: 'border-box' },
+  label: { fontSize: 12, fontWeight: 600, color: 'var(--ink-soft, #64748B)', margin: '10px 0 6px', display: 'block' },
+  card: { border: '1px solid var(--border, #E2E8F0)', borderRadius: 10, padding: 14, marginBottom: 10, cursor: 'pointer' },
+  row2: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 },
+  empty: { padding: '30px 10px', textAlign: 'center', color: 'var(--ink-soft, #64748B)', fontSize: 13 },
+  toast: { position: 'fixed', bottom: 24, left: '50%', transform: 'translateX(-50%)', background: 'var(--ink, #111827)', color: '#fff', padding: '10px 18px', borderRadius: 8, fontSize: 13, boxShadow: '0 6px 20px rgba(0,0,0,0.25)', zIndex: 5010 },
+  errBox: { background: 'var(--danger-soft, #FEF2F2)', border: '1px solid #FECACA', color: '#991B1B', borderRadius: 8, padding: '10px 14px', fontSize: 13, marginBottom: 14 },
+};
+
+// ---------- Seletor de produto do almoxarifado (busca simples) ----------
+function ProdutoPicker({ produtos, value, onChange }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const selected = (produtos || []).find((p) => p.codigo === Number(value));
+  const label = open ? query : selected ? `#${String(selected.codigo).padStart(3, '0')} · ${selected.produto}` : '';
+  const results = useMemo(() => {
+    const q = normalize(query);
+    const list = produtos || [];
+    if (!q) return list.slice(0, 40);
+    return list.filter((p) => normalize(p.produto).includes(q) || String(p.codigo).includes(query)).slice(0, 40);
+  }, [produtos, query]);
+  return html`
+    <div style=${{ position: 'relative' }}>
+      <input
+        style=${S.input}
+        placeholder="Buscar produto do almoxarifado…"
+        value=${label}
+        onFocus=${(e) => { setOpen(true); setQuery(''); e.target.select(); }}
+        onInput=${(e) => { setQuery(e.target.value); setOpen(true); }}
+        onBlur=${() => setTimeout(() => setOpen(false), 150)}
+      />
+      ${open && html`
+        <div style=${{ position: 'absolute', top: 'calc(100% + 4px)', left: 0, right: 0, background: '#fff', border: '1px solid var(--border,#E2E8F0)', borderRadius: 8, boxShadow: '0 10px 30px rgba(0,0,0,0.12)', maxHeight: 220, overflowY: 'auto', zIndex: 20 }}>
+          ${results.length === 0 && html`<div style=${{ padding: 12, fontSize: 12.5, color: 'var(--ink-soft,#64748B)' }}>Nenhum produto encontrado.</div>`}
+          ${results.map((p) => html`
+            <div
+              key=${p.codigo}
+              onMouseDown=${() => { onChange(p.codigo); setOpen(false); }}
+              style=${{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--bg,#F1F5F9)', fontSize: 13 }}
+              onMouseEnter=${(e) => (e.currentTarget.style.background = '#F8FAFC')}
+              onMouseLeave=${(e) => (e.currentTarget.style.background = '#fff')}
+            >
+              <div style=${{ fontWeight: 500 }}>${p.produto}</div>
+              <div style=${{ fontSize: 11, color: 'var(--ink-soft,#64748B)' }}>#${String(p.codigo).padStart(3, '0')} · saldo ${p.saldo ?? '—'}</div>
+            </div>
+          `)}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// ---------- App principal ----------
+function FrotaApp() {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState('manut'); // 'equip' | 'manut'
+  const [toast, setToast] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const [equipamentos, setEquipamentos] = useState(null);
+  const [manutencoes, setManutencoes] = useState(null);
+  const [produtos, setProdutos] = useState(null);
+
+  const [showEquipForm, setShowEquipForm] = useState(false);
+  const [editingEquip, setEditingEquip] = useState(null);
+
+  const [showManutForm, setShowManutForm] = useState(false);
+  const [selectedManutId, setSelectedManutId] = useState(null);
+
+  function notify(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(''), 2600);
+  }
+
+  async function loadEquipamentos() {
+    const { data, error } = await sf.from('equipamentos').select('*').order('nome');
+    if (error) { setErr('Não foi possível carregar os equipamentos.'); return; }
+    setEquipamentos(data || []);
+  }
+  async function loadManutencoes() {
+    const { data, error } = await sf.from('manutencao_custo_total').select('*, manutencoes!inner(equipamento_id, data, criado_por)').order('data', { ascending: false, foreignTable: 'manutencoes' });
+    if (error) {
+      // fallback caso a view não exista com esse relacionamento — busca simples
+      const { data: mData, error: mErr } = await sf.from('manutencoes').select('*').order('data', { ascending: false });
+      if (mErr) { setErr('Não foi possível carregar as manutenções. Confirme se rodou o SQL do módulo de frota no Supabase.'); return; }
+      setManutencoes((mData || []).map((m) => ({ ...m, custo_total: null })));
+      return;
+    }
+    setManutencoes((data || []).map((r) => ({ ...r.manutencoes, id: r.manutencao_id, custo_total: r.custo_total })));
+  }
+  async function loadProdutos() {
+    const { data, error } = await sf.from('product_balances').select('*');
+    if (error) return;
+    setProdutos(data || []);
+  }
+
+  useEffect(() => {
+    if (!open) return;
+    setErr('');
+    loadEquipamentos();
+    loadManutencoes();
+    loadProdutos();
+  }, [open]);
+
+  const equipMap = useMemo(() => {
+    const m = {};
+    (equipamentos || []).forEach((e) => (m[e.id] = e));
+    return m;
+  }, [equipamentos]);
+
+  // ---- CRUD equipamento ----
+  function openNewEquip() {
+    setEditingEquip({ nome: '', tipo: 'carro', identificacao: '', modelo: '', ano_fabricacao: '', km_horas_atual: '', status: 'ativo' });
+    setShowEquipForm(true);
+  }
+  function openEditEquip(e) {
+    setEditingEquip({ ...e });
+    setShowEquipForm(true);
+  }
+  async function saveEquip(ev) {
+    ev.preventDefault();
+    if (!editingEquip.nome.trim()) return;
+    setBusy(true);
+    const payload = {
+      nome: editingEquip.nome.trim().toUpperCase(),
+      tipo: editingEquip.tipo,
+      identificacao: editingEquip.identificacao || null,
+      modelo: editingEquip.modelo || null,
+      ano_fabricacao: editingEquip.ano_fabricacao ? Number(editingEquip.ano_fabricacao) : null,
+      km_horas_atual: editingEquip.km_horas_atual ? Number(editingEquip.km_horas_atual) : null,
+      status: editingEquip.status,
+    };
+    let error;
+    if (editingEquip.id) {
+      ({ error } = await sf.from('equipamentos').update(payload).eq('id', editingEquip.id));
+    } else {
+      payload.criado_por = await currentUserEmail();
+      ({ error } = await sf.from('equipamentos').insert([payload]));
+    }
+    setBusy(false);
+    if (error) { setErr('Não foi possível salvar o equipamento.'); return; }
+    await loadEquipamentos();
+    notify(editingEquip.id ? 'Equipamento atualizado.' : 'Equipamento cadastrado.');
+    setShowEquipForm(false);
+  }
+
+  // ---- CRUD manutenção ----
+  const [newManut, setNewManut] = useState({ equipamento_id: '', tipo: 'preventiva', descricao: '', data: todayISO() });
+  function openNewManut() {
+    setNewManut({ equipamento_id: (equipamentos || [])[0]?.id || '', tipo: 'preventiva', descricao: '', data: todayISO() });
+    setShowManutForm(true);
+  }
+  async function saveManut(ev) {
+    ev.preventDefault();
+    if (!newManut.equipamento_id || !newManut.descricao.trim()) return;
+    setBusy(true);
+    const criado_por = await currentUserEmail();
+    const { data, error } = await sf.from('manutencoes').insert([{
+      equipamento_id: newManut.equipamento_id,
+      tipo: newManut.tipo,
+      descricao: newManut.descricao.trim(),
+      data: newManut.data,
+      criado_por,
+    }]).select().single();
+    setBusy(false);
+    if (error || !data) { setErr('Não foi possível criar a manutenção.'); return; }
+    await loadManutencoes();
+    notify('Manutenção aberta.');
+    setShowManutForm(false);
+    setSelectedManutId(data.id);
+  }
+  async function updateManutStatus(m, status) {
+    const patch = { status };
+    if (status === 'concluida') patch.data_conclusao = todayISO();
+    const { error } = await sf.from('manutencoes').update(patch).eq('id', m.id);
+    if (error) { setErr('Não foi possível atualizar o status.'); return; }
+    await loadManutencoes();
+    notify('Status atualizado.');
+  }
+
+  return html`
+    <div>
+      <button class="print-hide" style=${S.fab} onClick=${() => setOpen(true)} title="Frota / Manutenção">
+        <span style=${{ fontSize: 17 }}>🚚</span> Frota / Manutenção
+      </button>
+      ${open && html`
+        <div class="print-hide" style=${S.backdrop} onClick=${() => setOpen(false)}>
+          <div style=${S.panel} onClick=${(e) => e.stopPropagation()}>
+            <div style=${S.header}>
+              <span style=${S.title}>Frota / Manutenção</span>
+              <button style=${S.closeBtn} onClick=${() => setOpen(false)}>✕</button>
+            </div>
+            <div style=${S.tabs}>
+              <button style=${S.tab(tab === 'manut')} onClick=${() => setTab('manut')}>Manutenções</button>
+              <button style=${S.tab(tab === 'equip')} onClick=${() => setTab('equip')}>Equipamentos</button>
+            </div>
+            <div style=${S.content}>
+              ${err && html`<div style=${S.errBox}>${err} <button style=${{ ...S.linkBtn, marginLeft: 8 }} onClick=${() => setErr('')}>fechar</button></div>`}
+
+              ${tab === 'equip' ? html`
+                <div style=${{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                  <button style=${S.btnPrimary} onClick=${openNewEquip}>+ Equipamento</button>
+                </div>
+                ${equipamentos === null ? html`<div style=${S.empty}>Carregando…</div>` :
+                  equipamentos.length === 0 ? html`<div style=${S.empty}>Nenhum equipamento cadastrado ainda.</div>` :
+                  equipamentos.map((e) => {
+                    const st = STATUS_EQUIP[e.status] || STATUS_EQUIP.ativo;
+                    return html`
+                      <div style=${S.card} onClick=${() => openEditEquip(e)}>
+                        <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                          <div>
+                            <div style=${{ fontWeight: 600, fontSize: 14 }}>${e.nome}</div>
+                            <div style=${{ fontSize: 12, color: 'var(--ink-soft,#64748B)', marginTop: 2 }}>
+                              ${(TIPOS_EQUIP.find((t) => t[0] === e.tipo) || [e.tipo, e.tipo])[1]}
+                              ${e.identificacao ? ` · ${e.identificacao}` : ''}
+                            </div>
+                          </div>
+                          <${Badge} label=${st[0]} fg=${st[1]} bg=${st[2]} />
+                        </div>
+                      </div>
+                    `;
+                  })}
+              ` : html`
+                <div style=${{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+                  <button style=${S.btnPrimary} onClick=${openNewManut} disabled=${!equipamentos || equipamentos.length === 0}>+ Nova manutenção</button>
+                </div>
+                ${!equipamentos || equipamentos.length === 0 ? html`<div style=${S.empty}>Cadastre um equipamento primeiro, na aba "Equipamentos".</div>` :
+                  manutencoes === null ? html`<div style=${S.empty}>Carregando…</div>` :
+                  manutencoes.length === 0 ? html`<div style=${S.empty}>Nenhuma manutenção registrada ainda.</div>` :
+                  manutencoes.map((m) => {
+                    const st = STATUS_MANUT[m.status] || STATUS_MANUT.aberta;
+                    const eq = equipMap[m.equipamento_id];
+                    return html`
+                      <div style=${S.card} onClick=${() => setSelectedManutId(m.id)}>
+                        <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 }}>
+                          <div style=${{ minWidth: 0 }}>
+                            <div style=${{ fontWeight: 600, fontSize: 14 }}>${eq ? eq.nome : 'Equipamento removido'}</div>
+                            <div style=${{ fontSize: 12.5, color: 'var(--ink-soft,#64748B)', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${m.descricao}</div>
+                            <div style=${{ fontSize: 11.5, color: 'var(--ink-soft,#64748B)', marginTop: 4 }}>${fmtDate(m.data)} · ${(TIPOS_MANUT.find((t) => t[0] === m.tipo) || [m.tipo, m.tipo])[1]}</div>
+                          </div>
+                          <div style=${{ textAlign: 'right', flexShrink: 0 }}>
+                            <${Badge} label=${st[0]} fg=${st[1]} bg=${st[2]} />
+                            ${m.custo_total != null && html`<div style=${{ fontSize: 12.5, fontWeight: 700, marginTop: 6 }}>${fmtBRL(m.custo_total)}</div>`}
+                          </div>
+                        </div>
+                      </div>
+                    `;
+                  })}
+              `}
+            </div>
+          </div>
+        </div>
+      `}
+
+      ${showEquipForm && html`
+        <div class="print-hide" style=${{ ...S.backdrop, justifyContent: 'center', alignItems: 'center', zIndex: 5005 }} onClick=${() => setShowEquipForm(false)}>
+          <form style=${{ background: '#fff', borderRadius: 12, width: 420, maxWidth: '92%', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }} onClick=${(e) => e.stopPropagation()} onSubmit=${saveEquip}>
+            <div style=${S.header}>
+              <span style=${S.title}>${editingEquip.id ? 'Editar equipamento' : 'Novo equipamento'}</span>
+              <button type="button" style=${S.closeBtn} onClick=${() => setShowEquipForm(false)}>✕</button>
+            </div>
+            <div style=${{ padding: 18 }}>
+              <label style=${S.label}>Nome</label>
+              <input style=${S.input} value=${editingEquip.nome} onInput=${(e) => setEditingEquip({ ...editingEquip, nome: e.target.value })} placeholder="ex: Van Fiorino - ABC-1234" required autofocus />
+              <div style=${S.row2}>
+                <div>
+                  <label style=${S.label}>Tipo</label>
+                  <select style=${S.input} value=${editingEquip.tipo} onChange=${(e) => setEditingEquip({ ...editingEquip, tipo: e.target.value })}>
+                    ${TIPOS_EQUIP.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>Identificação (placa/série)</label>
+                  <input style=${S.input} value=${editingEquip.identificacao || ''} onInput=${(e) => setEditingEquip({ ...editingEquip, identificacao: e.target.value })} placeholder="opcional" />
+                </div>
+              </div>
+              <div style=${S.row2}>
+                <div>
+                  <label style=${S.label}>Modelo</label>
+                  <input style=${S.input} value=${editingEquip.modelo || ''} onInput=${(e) => setEditingEquip({ ...editingEquip, modelo: e.target.value })} placeholder="opcional" />
+                </div>
+                <div>
+                  <label style=${S.label}>Ano</label>
+                  <input type="number" style=${S.input} value=${editingEquip.ano_fabricacao || ''} onInput=${(e) => setEditingEquip({ ...editingEquip, ano_fabricacao: e.target.value })} placeholder="opcional" />
+                </div>
+              </div>
+              <div style=${S.row2}>
+                <div>
+                  <label style=${S.label}>Km/horas atual</label>
+                  <input type="number" step="0.1" style=${S.input} value=${editingEquip.km_horas_atual || ''} onInput=${(e) => setEditingEquip({ ...editingEquip, km_horas_atual: e.target.value })} placeholder="opcional" />
+                </div>
+                <div>
+                  <label style=${S.label}>Status</label>
+                  <select style=${S.input} value=${editingEquip.status} onChange=${(e) => setEditingEquip({ ...editingEquip, status: e.target.value })}>
+                    ${Object.keys(STATUS_EQUIP).map((k) => html`<option value=${k}>${STATUS_EQUIP[k][0]}</option>`)}
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: 14, borderTop: '1px solid var(--border,#E2E8F0)' }}>
+              <button type="button" style=${S.btnGhost} onClick=${() => setShowEquipForm(false)}>Cancelar</button>
+              <button type="submit" style=${S.btnPrimary} disabled=${busy}>${editingEquip.id ? 'Salvar alterações' : 'Cadastrar'}</button>
+            </div>
+          </form>
+        </div>
+      `}
+
+      ${showManutForm && html`
+        <div class="print-hide" style=${{ ...S.backdrop, justifyContent: 'center', alignItems: 'center', zIndex: 5005 }} onClick=${() => setShowManutForm(false)}>
+          <form style=${{ background: '#fff', borderRadius: 12, width: 420, maxWidth: '92%', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }} onClick=${(e) => e.stopPropagation()} onSubmit=${saveManut}>
+            <div style=${S.header}>
+              <span style=${S.title}>Nova manutenção</span>
+              <button type="button" style=${S.closeBtn} onClick=${() => setShowManutForm(false)}>✕</button>
+            </div>
+            <div style=${{ padding: 18 }}>
+              <label style=${S.label}>Equipamento</label>
+              <select style=${S.input} value=${newManut.equipamento_id} onChange=${(e) => setNewManut({ ...newManut, equipamento_id: e.target.value })} required>
+                ${(equipamentos || []).map((e) => html`<option value=${e.id}>${e.nome}</option>`)}
+              </select>
+              <div style=${S.row2}>
+                <div>
+                  <label style=${S.label}>Tipo</label>
+                  <select style=${S.input} value=${newManut.tipo} onChange=${(e) => setNewManut({ ...newManut, tipo: e.target.value })}>
+                    ${TIPOS_MANUT.map(([v, l]) => html`<option value=${v}>${l}</option>`)}
+                  </select>
+                </div>
+                <div>
+                  <label style=${S.label}>Data</label>
+                  <input type="date" style=${S.input} value=${newManut.data} onInput=${(e) => setNewManut({ ...newManut, data: e.target.value })} />
+                </div>
+              </div>
+              <label style=${S.label}>Descrição</label>
+              <textarea style=${{ ...S.input, minHeight: 60, resize: 'vertical' }} value=${newManut.descricao} onInput=${(e) => setNewManut({ ...newManut, descricao: e.target.value })} placeholder="ex: Troca de óleo e filtro" required></textarea>
+            </div>
+            <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: 14, borderTop: '1px solid var(--border,#E2E8F0)' }}>
+              <button type="button" style=${S.btnGhost} onClick=${() => setShowManutForm(false)}>Cancelar</button>
+              <button type="submit" style=${S.btnPrimary} disabled=${busy}>Abrir manutenção</button>
+            </div>
+          </form>
+        </div>
+      `}
+
+      ${selectedManutId && html`
+        <${ManutDetail}
+          id=${selectedManutId}
+          equipamento=${equipMap}
+          produtos=${produtos}
+          onClose=${() => setSelectedManutId(null)}
+          onChanged=${() => { loadManutencoes(); }}
+          notify=${notify}
+          setErr=${setErr}
+        />
+      `}
+
+      ${toast && html`<div style=${S.toast}>${toast}</div>`}
+    </div>
+  `;
+}
+
+// ---------- Detalhe de uma manutenção (peças + serviços) ----------
+function ManutDetail({ id, equipamento, produtos, onClose, onChanged, notify, setErr }) {
+  const [manut, setManut] = useState(null);
+  const [itens, setItens] = useState(null);
+  const [servicos, setServicos] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const [novoCodigo, setNovoCodigo] = useState('');
+  const [novaQtd, setNovaQtd] = useState('1');
+  const [novoValor, setNovoValor] = useState('');
+
+  const [novoServDesc, setNovoServDesc] = useState('');
+  const [novoServPrestador, setNovoServPrestador] = useState('');
+  const [novoServValor, setNovoServValor] = useState('');
+
+  async function loadAll() {
+    const [{ data: m }, { data: it }, { data: sv }] = await Promise.all([
+      sf.from('manutencoes').select('*').eq('id', id).single(),
+      sf.from('manutencao_itens').select('*').eq('manutencao_id', id).order('created_at'),
+      sf.from('manutencao_servicos').select('*').eq('manutencao_id', id).order('created_at'),
+    ]);
+    setManut(m || null);
+    setItens(it || []);
+    setServicos(sv || []);
+  }
+  useEffect(() => { loadAll(); }, [id]);
+
+  const totalPecas = (itens || []).reduce((s, i) => s + Number(i.valor_total || 0), 0);
+  const totalServicos = (servicos || []).reduce((s, s2) => s + Number(s2.valor || 0), 0);
+  const total = totalPecas + totalServicos;
+
+  async function addItem(ev) {
+    ev.preventDefault();
+    if (!novoCodigo || !novaQtd || Number(novaQtd) <= 0) return;
+    const produto = (produtos || []).find((p) => p.codigo === Number(novoCodigo));
+    setBusy(true);
+    const criado_por = await currentUserEmail();
+    const { error } = await sf.from('manutencao_itens').insert([{
+      manutencao_id: id,
+      codigo: Number(novoCodigo),
+      produto: produto ? produto.produto : '',
+      quantidade: Number(novaQtd),
+      valor_unitario: Number(novoValor) || 0,
+      criado_por,
+    }]);
+    setBusy(false);
+    if (error) { setErr('Não foi possível adicionar a peça.'); return; }
+    setNovoCodigo(''); setNovaQtd('1'); setNovoValor('');
+    await loadAll();
+  }
+
+  async function baixarDoEstoque(item) {
+    const produto = (produtos || []).find((p) => p.codigo === item.codigo);
+    if (!produto) { setErr('Produto não encontrado no estoque.'); return; }
+    if (Number(produto.saldo) < Number(item.quantidade)) {
+      setErr(`Saldo insuficiente: "${item.produto}" tem ${produto.saldo} em estoque, precisa de ${item.quantidade}.`);
+      return;
+    }
+    if (!window.confirm(`Dar saída de ${item.quantidade} ${produto.unidade || ''} de "${item.produto}" no estoque do almoxarifado?`)) return;
+    setBusy(true);
+    const criado_por = await currentUserEmail();
+    const eq = equipamento[manut.equipamento_id];
+    const { data: mv, error: mvErr } = await sf.from('movements').insert([{
+      data: todayISO(),
+      tipo: 'saida',
+      codigo: item.codigo,
+      produto: item.produto,
+      quantidade: item.quantidade,
+      valor: item.valor_unitario,
+      valor_total: item.valor_total,
+      marca: '',
+      area_finalidade: 'MANUTENÇÃO DE FROTA',
+      solicitante: eq ? eq.nome : '',
+      nota_fiscal: `Manutenção #${String(manut.id).slice(0, 8)}`,
+      categoria: produto.categoria,
+      manutencao_id: id,
+      criado_por,
+    }]).select().single();
+    if (mvErr || !mv) { setBusy(false); setErr('Não foi possível dar saída no estoque.'); return; }
+    const { error: itErr } = await sf.from('manutencao_itens').update({ movement_id: mv.id }).eq('id', item.id);
+    setBusy(false);
+    if (itErr) { setErr('Saída registrada, mas não consegui vincular à peça.'); return; }
+    await loadAll();
+    onChanged();
+    notify('Saída registrada no estoque.');
+  }
+
+  async function removeItem(item) {
+    if (item.movement_id) { setErr('Essa peça já teve saída registrada no estoque — estorne o lançamento na tela de Movimentações antes de remover.'); return; }
+    if (!window.confirm('Remover essa peça da manutenção?')) return;
+    const { error } = await sf.from('manutencao_itens').delete().eq('id', item.id);
+    if (error) { setErr('Não foi possível remover.'); return; }
+    await loadAll();
+  }
+
+  async function addServico(ev) {
+    ev.preventDefault();
+    if (!novoServDesc.trim()) return;
+    setBusy(true);
+    const criado_por = await currentUserEmail();
+    const { error } = await sf.from('manutencao_servicos').insert([{
+      manutencao_id: id,
+      descricao: novoServDesc.trim(),
+      prestador: novoServPrestador || null,
+      valor: Number(novoServValor) || 0,
+      criado_por,
+    }]);
+    setBusy(false);
+    if (error) { setErr('Não foi possível adicionar o serviço.'); return; }
+    setNovoServDesc(''); setNovoServPrestador(''); setNovoServValor('');
+    await loadAll();
+  }
+  async function removeServico(s) {
+    if (!window.confirm('Remover esse serviço?')) return;
+    const { error } = await sf.from('manutencao_servicos').delete().eq('id', s.id);
+    if (error) { setErr('Não foi possível remover.'); return; }
+    await loadAll();
+  }
+
+  async function setStatus(status) {
+    const patch = { status };
+    if (status === 'concluida') patch.data_conclusao = todayISO();
+    const { error } = await sf.from('manutencoes').update(patch).eq('id', id);
+    if (error) { setErr('Não foi possível atualizar o status.'); return; }
+    await loadAll();
+    onChanged();
+    notify('Status atualizado.');
+  }
+
+  if (!manut) {
+    return html`
+      <div class="print-hide" style=${{ ...S.backdrop, justifyContent: 'center', alignItems: 'center', zIndex: 5006 }} onClick=${onClose}>
+        <div style=${{ background: '#fff', borderRadius: 12, padding: 30, fontSize: 13, color: 'var(--ink-soft,#64748B)' }}>Carregando…</div>
+      </div>
+    `;
+  }
+
+  const eq = equipamento[manut.equipamento_id];
+  const st = STATUS_MANUT[manut.status] || STATUS_MANUT.aberta;
+
+  return html`
+    <div class="print-hide" style=${{ ...S.backdrop, justifyContent: 'center', alignItems: 'center', zIndex: 5006 }} onClick=${onClose}>
+      <div style=${{ background: '#fff', borderRadius: 12, width: 600, maxWidth: '94%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }} onClick=${(e) => e.stopPropagation()}>
+        <div style=${S.header}>
+          <span style=${S.title}>${eq ? eq.nome : 'Manutenção'}</span>
+          <button style=${S.closeBtn} onClick=${onClose}>✕</button>
+        </div>
+        <div style=${{ padding: 18 }}>
+          <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10, marginBottom: 12 }}>
+            <div>
+              <div style=${{ fontSize: 14, fontWeight: 600 }}>${manut.descricao}</div>
+              <div style=${{ fontSize: 12, color: 'var(--ink-soft,#64748B)', marginTop: 2 }}>${fmtDate(manut.data)} · ${(TIPOS_MANUT.find((t) => t[0] === manut.tipo) || [manut.tipo])[1]}</div>
+            </div>
+            <${Badge} label=${st[0]} fg=${st[1]} bg=${st[2]} />
+          </div>
+
+          <div style=${{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 18 }}>
+            ${manut.status !== 'em_andamento' && manut.status !== 'concluida' && html`<button style=${S.btnGhost} onClick=${() => setStatus('em_andamento')}>Marcar em andamento</button>`}
+            ${manut.status !== 'concluida' && html`<button style=${S.btnGhost} onClick=${() => setStatus('concluida')}>Concluir manutenção</button>`}
+            ${manut.status !== 'cancelada' && manut.status !== 'concluida' && html`<button style=${{ ...S.btnGhost, color: 'var(--danger,#B91C1C)' }} onClick=${() => setStatus('cancelada')}>Cancelar</button>`}
+          </div>
+
+          <div style=${{ fontWeight: 700, fontSize: 13, marginBottom: 8 }}>Peças do almoxarifado</div>
+          ${(itens || []).map((it) => html`
+            <div key=${it.id} style=${{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--bg,#F1F5F9)' }}>
+              <div style=${{ flex: 1, minWidth: 0 }}>
+                <div style=${{ fontSize: 13, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>${it.produto}</div>
+                <div style=${{ fontSize: 11.5, color: 'var(--ink-soft,#64748B)' }}>${it.quantidade} × ${fmtBRL(it.valor_unitario)} = ${fmtBRL(it.valor_total)}</div>
+              </div>
+              ${it.movement_id
+                ? html`<span style=${{ fontSize: 11, color: 'var(--success,#15803D)', fontWeight: 600 }}>baixado ✓</span>`
+                : html`<button style=${S.linkBtn} onClick=${() => baixarDoEstoque(it)} disabled=${busy}>Baixar do estoque</button>`}
+              <button style=${{ ...S.linkBtn, color: 'var(--danger,#B91C1C)' }} onClick=${() => removeItem(it)}>Remover</button>
+            </div>
+          `)}
+          ${(itens || []).length === 0 && html`<div style=${{ fontSize: 12.5, color: 'var(--ink-soft,#64748B)', padding: '6px 0' }}>Nenhuma peça adicionada ainda.</div>`}
+
+          <form onSubmit=${addItem} style=${{ display: 'flex', gap: 6, marginTop: 10, alignItems: 'flex-start' }}>
+            <div style=${{ flex: 1 }}><${ProdutoPicker} produtos=${produtos} value=${novoCodigo} onChange=${setNovoCodigo} /></div>
+            <input type="number" min="0.01" step="0.01" placeholder="qtd." value=${novaQtd} onInput=${(e) => setNovaQtd(e.target.value)} style=${{ ...S.input, width: 64 }} />
+            <input type="number" min="0" step="0.01" placeholder="R$ unit." value=${novoValor} onInput=${(e) => setNovoValor(e.target.value)} style=${{ ...S.input, width: 90 }} />
+            <button type="submit" style=${S.btnGhost} disabled=${busy}>+</button>
+          </form>
+
+          <div style=${{ fontWeight: 700, fontSize: 13, margin: '20px 0 8px' }}>Serviços / mão de obra</div>
+          ${(servicos || []).map((s) => html`
+            <div key=${s.id} style=${{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: '1px solid var(--bg,#F1F5F9)' }}>
+              <div style=${{ flex: 1, minWidth: 0 }}>
+                <div style=${{ fontSize: 13, fontWeight: 500 }}>${s.descricao}</div>
+                <div style=${{ fontSize: 11.5, color: 'var(--ink-soft,#64748B)' }}>${s.prestador ? s.prestador + ' · ' : ''}${fmtBRL(s.valor)}</div>
+              </div>
+              <button style=${{ ...S.linkBtn, color: 'var(--danger,#B91C1C)' }} onClick=${() => removeServico(s)}>Remover</button>
+            </div>
+          `)}
+          ${(servicos || []).length === 0 && html`<div style=${{ fontSize: 12.5, color: 'var(--ink-soft,#64748B)', padding: '6px 0' }}>Nenhum serviço adicionado ainda.</div>`}
+
+          <form onSubmit=${addServico} style=${{ display: 'flex', gap: 6, marginTop: 10 }}>
+            <input placeholder="descrição (ex: mão de obra)" value=${novoServDesc} onInput=${(e) => setNovoServDesc(e.target.value)} style=${{ ...S.input, flex: 2 }} />
+            <input placeholder="prestador" value=${novoServPrestador} onInput=${(e) => setNovoServPrestador(e.target.value)} style=${{ ...S.input, flex: 1 }} />
+            <input type="number" min="0" step="0.01" placeholder="R$" value=${novoServValor} onInput=${(e) => setNovoServValor(e.target.value)} style=${{ ...S.input, width: 80 }} />
+            <button type="submit" style=${S.btnGhost} disabled=${busy}>+</button>
+          </form>
+
+          <div style=${{ display: 'flex', justifyContent: 'space-between', marginTop: 20, paddingTop: 14, borderTop: '1px solid var(--border,#E2E8F0)' }}>
+            <span style=${{ fontSize: 13, fontWeight: 700 }}>Custo total</span>
+            <span style=${{ fontSize: 16, fontWeight: 700 }}>${fmtBRL(total)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+const mountPoint = document.createElement('div');
+mountPoint.id = 'frota-app-mount';
+document.body.appendChild(mountPoint);
+render(html`<${FrotaApp} />`, mountPoint);
+</script>
 </body>
 </html>
