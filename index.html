@@ -1488,7 +1488,7 @@ function UsuariosScreen() {
   const [msg, setMsg] = useState('');
 
   async function load() {
-    const { data, error } = await sb.from('perfis').select('*').order('nome_exibicao');
+    const { data, error } = await sb.from('perfis').select('*').order('nome');
     if (error) { setErr('Não foi possível carregar os usuários.'); return; }
     setLista(data || []);
   }
@@ -1503,14 +1503,14 @@ function UsuariosScreen() {
 
   async function salvar(ev) {
     ev.preventDefault();
-    if (editando.id === meuId && editando.bloqueado) {
+    if (editando.id === meuId && !editando.ativo) {
       if (!window.confirm('Você está prestes a bloquear a si mesmo, e vai perder o acesso ao sistema. Continuar?')) return;
     }
     setBusy(true);
     const { error } = await sb.from('perfis').update({
-      nome_exibicao: editando.nome_exibicao.trim(),
+      nome: editando.nome.trim(),
       role: editando.role,
-      bloqueado: editando.bloqueado,
+      ativo: editando.ativo,
     }).eq('id', editando.id);
     setBusy(false);
     if (error) { setErr('Não foi possível salvar.'); return; }
@@ -1525,7 +1525,7 @@ function UsuariosScreen() {
       <div style=${S.content}>
         <form style=${S.formCard} onSubmit=${salvar}>
           <label style=${S.label}>Nome de exibição</label>
-          <input style=${S.input} value=${editando.nome_exibicao || ''} onInput=${(e) => setEditando({ ...editando, nome_exibicao: e.target.value })} required autofocus />
+          <input style=${S.input} value=${editando.nome || ''} onInput=${(e) => setEditando({ ...editando, nome: e.target.value })} required autofocus />
           <label style=${S.label}>E-mail</label>
           <input style=${{ ...S.input, background: 'var(--bg)', color: 'var(--ink-soft)' }} value=${editando.email || ''} disabled />
           <label style=${S.label}>Papel</label>
@@ -1534,7 +1534,7 @@ function UsuariosScreen() {
             <option value="admin">Admin</option>
           </select>
           <label style=${{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', cursor: 'pointer', marginTop: 14 }}>
-            <input type="checkbox" checked=${editando.bloqueado} onChange=${(e) => setEditando({ ...editando, bloqueado: e.target.checked })} style=${{ marginTop: 2 }} />
+            <input type="checkbox" checked=${!editando.ativo} onChange=${(e) => setEditando({ ...editando, ativo: !e.target.checked })} style=${{ marginTop: 2 }} />
             <span>Acesso bloqueado (o usuário não consegue mais entrar no sistema)</span>
           </label>
           <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
@@ -1562,10 +1562,10 @@ function UsuariosScreen() {
               const r = ROLES[p.role] || ROLES.operador;
               return html`
                 <tr style=${S.tr} onClick=${() => editar(p)}>
-                  <td style=${{ ...S.td, fontWeight: 500 }}>${p.nome_exibicao || '—'} ${p.id === meuId && html`<span style=${{ fontSize: 11, color: 'var(--ink-soft)' }}> (você)</span>`}</td>
+                  <td style=${{ ...S.td, fontWeight: 500 }}>${p.nome || '—'} ${p.id === meuId && html`<span style=${{ fontSize: 11, color: 'var(--ink-soft)' }}> (você)</span>`}</td>
                   <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${p.email || '—'}</td>
                   <td style=${S.td}><${Badge} label=${r[0]} fg=${r[1]} bg=${r[2]} /></td>
-                  <td style=${S.td}>${p.bloqueado ? html`<${Badge} label="Bloqueado" fg="#B91C1C" bg="#FEF2F2" />` : html`<${Badge} label="Ativo" fg="#15803D" bg="#F0FDF4" />`}</td>
+                  <td style=${S.td}>${!p.ativo ? html`<${Badge} label="Bloqueado" fg="#B91C1C" bg="#FEF2F2" />` : html`<${Badge} label="Ativo" fg="#15803D" bg="#F0FDF4" />`}</td>
                 </tr>
               `;
             })}
@@ -2066,15 +2066,15 @@ function Root() {
 
   useEffect(() => {
     if (!session) { setPerfil(session === null ? null : undefined); return; }
-    sb.from('perfis').select('role, bloqueado').eq('id', session.user.id).single().then(({ data }) => {
-      setPerfil(data || { role: 'operador', bloqueado: false });
+    sb.from('perfis').select('role, ativo').eq('id', session.user.id).single().then(({ data }) => {
+      setPerfil(data || { role: 'operador', ativo: true });
     });
   }, [session]);
 
   if (session === undefined) return html`<div style=${{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--ink-soft)' }}>Carregando…</div>`;
   if (session === null) return html`<${Login} />`;
   if (perfil === undefined) return html`<div style=${{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--ink-soft)' }}>Carregando…</div>`;
-  if (perfil.bloqueado) {
+  if (perfil.ativo === false) {
     return html`
       <div style=${{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
         <div style=${{ textAlign: 'center', maxWidth: 340 }}>
