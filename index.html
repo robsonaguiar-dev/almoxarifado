@@ -768,6 +768,221 @@ function CadastrosScreen() {
 }
 
 // =====================================================================
+// TELA: COMPRAS (requisições)
+// =====================================================================
+function ComprasScreen() {
+  const [view, setView] = useState('lista'); // lista | form | detalhe
+  const [lista, setLista] = useState(null);
+  const [produtos, setProdutos] = useState(null);
+  const [selected, setSelected] = useState(null);
+  const [itensSelected, setItensSelected] = useState(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const [setor, setSetor] = useState('');
+  const [localEntrega, setLocalEntrega] = useState('');
+  const [empresa, setEmpresa] = useState('');
+  const [observacao, setObservacao] = useState('');
+  const [itens, setItens] = useState([]);
+  const [addCodigo, setAddCodigo] = useState('');
+  const [addQtd, setAddQtd] = useState('1');
+  const [addMarca, setAddMarca] = useState('');
+
+  async function loadLista() {
+    const { data, error } = await sb.from('requisicoes').select('*, requisicao_itens(count)').order('numero', { ascending: false });
+    if (error) { setErr('Não foi possível carregar as requisições.'); return; }
+    setLista(data || []);
+  }
+  async function loadProdutos() {
+    const { data } = await sb.from('product_balances').select('*');
+    setProdutos(data || []);
+  }
+  useEffect(() => { loadLista(); loadProdutos(); }, []);
+
+  function novaRequisicao() {
+    setSetor(''); setLocalEntrega(''); setEmpresa(''); setObservacao(''); setItens([]);
+    setAddCodigo(''); setAddQtd('1'); setAddMarca('');
+    setView('form');
+  }
+
+  function addItem() {
+    if (!addCodigo || !addQtd || Number(addQtd) <= 0) return;
+    const p = (produtos || []).find((x) => x.codigo === Number(addCodigo));
+    if (!p) return;
+    if (itens.some((i) => i.codigo === p.codigo)) { setErr('Esse produto já está na lista.'); return; }
+    setItens([...itens, { codigo: p.codigo, produto: p.produto, unidade: p.unidade || 'un', quantidade: Number(addQtd), marca_sugerida: addMarca.trim().toUpperCase() }]);
+    setAddCodigo(''); setAddQtd('1'); setAddMarca('');
+  }
+  function removeItem(codigo) { setItens(itens.filter((i) => i.codigo !== codigo)); }
+
+  async function salvarRequisicao(ev) {
+    ev.preventDefault();
+    if (itens.length === 0) { setErr('Adicione ao menos um item.'); return; }
+    setBusy(true);
+    const { data: userData } = await sb.auth.getUser();
+    const { data: req, error } = await sb.from('requisicoes').insert([{
+      empresa: empresa.trim(), local_entrega: localEntrega.trim(), setor_requisitante: setor.trim(),
+      observacao: observacao.trim(), criado_por: userData?.user?.email || '',
+    }]).select().single();
+    if (error || !req) { setBusy(false); setErr('Não foi possível criar a requisição.'); return; }
+    const linhas = itens.map((i) => ({ requisicao_id: req.id, codigo: i.codigo, produto: i.produto, unidade: i.unidade, quantidade: i.quantidade, marca_sugerida: i.marca_sugerida }));
+    const { error: itErr } = await sb.from('requisicao_itens').insert(linhas);
+    setBusy(false);
+    if (itErr) { setErr('Requisição criada, mas houve erro ao salvar os itens.'); return; }
+    await loadLista();
+    abrirDetalhe(req);
+  }
+
+  async function abrirDetalhe(req) {
+    setSelected(req); setItensSelected(null); setView('detalhe');
+    const { data } = await sb.from('requisicao_itens').select('*').eq('requisicao_id', req.id).order('created_at');
+    setItensSelected(data || []);
+  }
+
+  async function atender() {
+    if (!itensSelected || itensSelected.length === 0) return;
+    const faltando = [];
+    for (const it of itensSelected) {
+      const p = (produtos || []).find((x) => x.codigo === it.codigo);
+      if (!p || Number(p.saldo) < Number(it.quantidade)) faltando.push(`${it.produto} (precisa ${it.quantidade}, tem ${p ? p.saldo : 0})`);
+    }
+    if (faltando.length > 0) { setErr(`Não dá pra atender agora — falta estoque de: ${faltando.join(', ')}.`); return; }
+    if (!window.confirm(`Atender a requisição #${selected.numero}? Isso vai dar saída de ${itensSelected.length} item(ns) no estoque.`)) return;
+    setBusy(true);
+    const { data: userData } = await sb.auth.getUser();
+    const criado_por = userData?.user?.email || '';
+    const areaFinalidade = (selected.setor_requisitante || selected.empresa || 'REQUISIÇÃO').toUpperCase();
+    const movs = itensSelected.map((it) => {
+      const p = (produtos || []).find((x) => x.codigo === it.codigo);
+      return {
+        data: todayISO(), tipo: 'saida', codigo: it.codigo, produto: it.produto, quantidade: it.quantidade,
+        valor: 0, valor_total: 0, marca: '', area_finalidade: areaFinalidade,
+        solicitante: (selected.setor_requisitante || '').toUpperCase(), nota_fiscal: `Requisição #${selected.numero}`,
+        categoria: p ? p.categoria : '', requisicao_id: selected.id, criado_por,
+      };
+    });
+    const { error } = await sb.from('movements').insert(movs);
+    if (error) { setBusy(false); setErr('Não foi possível registrar as saídas dessa requisição.'); return; }
+    const { error: e2 } = await sb.from('requisicoes').update({ status: 'fechada' }).eq('id', selected.id);
+    setBusy(false);
+    if (e2) { setErr('As saídas foram lançadas, mas não deu pra marcar a requisição como fechada.'); return; }
+    await Promise.all([loadLista(), loadProdutos()]);
+    setSelected({ ...selected, status: 'fechada' });
+  }
+  async function reabrir() {
+    if (!window.confirm(`Reabrir a requisição #${selected.numero}? Isso não desfaz as saídas de estoque já lançadas.`)) return;
+    const { error } = await sb.from('requisicoes').update({ status: 'aberta' }).eq('id', selected.id);
+    if (error) { setErr('Não foi possível reabrir.'); return; }
+    await loadLista();
+    setSelected({ ...selected, status: 'aberta' });
+  }
+
+  if (view === 'form') {
+    return html`
+      <div style=${S.topbar}><button style=${{ ...S.linkBtn, marginRight: 10 }} onClick=${() => setView('lista')}>← Compras</button><h1 style=${S.h1}>Nova requisição</h1></div>
+      <div style=${S.content}>
+        ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+        <form style=${{ ...S.formCard, maxWidth: 640 }} onSubmit=${salvarRequisicao}>
+          <div style=${S.row2}>
+            <div><label style=${S.label}>Setor requisitante</label><input style=${S.input} value=${setor} onInput=${(e) => setSetor(e.target.value)} placeholder="ex: Almoxarifado" /></div>
+            <div><label style=${S.label}>Local de entrega</label><input style=${S.input} value=${localEntrega} onInput=${(e) => setLocalEntrega(e.target.value)} placeholder="opcional" /></div>
+          </div>
+          <label style=${S.label}>Empresa (aparece no orçamento impresso)</label>
+          <input style=${S.input} value=${empresa} onInput=${(e) => setEmpresa(e.target.value)} placeholder="opcional" />
+          <label style=${S.label}>Observação</label>
+          <textarea style=${{ ...S.input, minHeight: 50, resize: 'vertical' }} value=${observacao} onInput=${(e) => setObservacao(e.target.value)} placeholder="opcional"></textarea>
+
+          <div style=${{ fontWeight: 700, fontSize: 13, margin: '18px 0 8px' }}>Itens</div>
+          <div style=${{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            <div style=${{ flex: 1 }}><${ProdutoPicker} produtos=${produtos} value=${addCodigo} onChange=${setAddCodigo} /></div>
+            <input type="number" min="0.01" step="0.01" placeholder="qtd." value=${addQtd} onInput=${(e) => setAddQtd(e.target.value)} style=${{ ...S.input, width: 70 }} />
+            <input placeholder="marca (opcional)" value=${addMarca} onInput=${(e) => setAddMarca(e.target.value)} style=${{ ...S.input, width: 130 }} />
+            <button type="button" style=${S.btnGhost} onClick=${addItem}>+</button>
+          </div>
+          ${itens.length > 0 ? html`
+            <div style=${{ border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+              ${itens.map((i) => html`
+                <div key=${i.codigo} style=${{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', borderBottom: '1px solid var(--bg)' }}>
+                  <div style=${{ flex: 1, fontSize: 13 }}>${i.produto} ${i.marca_sugerida ? `· ${i.marca_sugerida}` : ''}</div>
+                  <div style=${{ fontSize: 12.5, color: 'var(--ink-soft)' }}>${i.quantidade} ${i.unidade}</div>
+                  <button type="button" style=${{ ...S.linkBtn, color: 'var(--danger)' }} onClick=${() => removeItem(i.codigo)}>Remover</button>
+                </div>
+              `)}
+            </div>
+          ` : html`<div style=${{ ...S.empty, border: '1px dashed var(--border)', borderRadius: 8 }}>Nenhum item adicionado ainda.</div>`}
+
+          <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+            <button type="button" style=${S.btnGhost} onClick=${() => setView('lista')}>Cancelar</button>
+            <button type="submit" style=${S.btnPrimary} disabled=${busy}>Salvar requisição</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  if (view === 'detalhe' && selected) {
+    return html`
+      <div style=${S.topbar}>
+        <div><button style=${{ ...S.linkBtn, marginBottom: 6, display: 'block' }} onClick=${() => setView('lista')}>← Compras</button><h1 style=${S.h1}>Requisição #${selected.numero}</h1></div>
+        ${selected.status === 'aberta' ? html`<${Badge} label="Aberta" fg="#B45309" bg="#FFFBEB" />` : html`<${Badge} label="Fechada" fg="#15803D" bg="#F0FDF4" />`}
+      </div>
+      <div style=${S.content}>
+        ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+        <div style=${{ fontSize: 12.5, color: 'var(--ink-soft)', marginBottom: 14 }}>
+          ${selected.setor_requisitante ? `Setor: ${selected.setor_requisitante} · ` : ''}${fmtDate(selected.data)}
+          ${selected.observacao ? html`<div style=${{ marginTop: 4 }}>${selected.observacao}</div>` : ''}
+        </div>
+        <div style=${{ display: 'flex', gap: 8, marginBottom: 16 }}>
+          ${selected.status === 'aberta'
+            ? html`<button style=${S.btnPrimary} onClick=${atender} disabled=${busy}>Atender requisição</button>`
+            : html`<button style=${S.btnGhost} onClick=${reabrir}>Reabrir requisição</button>`}
+        </div>
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Produto</th><th style=${S.th}>Marca sugerida</th><th style=${{ ...S.th, textAlign: 'right' }}>Qtd.</th></tr></thead>
+            <tbody>
+              ${itensSelected === null ? null : itensSelected.map((i) => html`
+                <tr style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, fontWeight: 500 }}>${i.produto}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${i.marca_sugerida || '—'}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}>${i.quantidade} ${i.unidade}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+          ${itensSelected === null && html`<div style=${S.empty}>Carregando…</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style=${S.topbar}><h1 style=${S.h1}>Compras</h1><button style=${S.btnPrimary} onClick=${novaRequisicao}>+ Nova requisição</button></div>
+    <div style=${S.content}>
+      ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+      <div style=${S.panel}>
+        <table style=${S.table}>
+          <thead><tr><th style=${S.th}>Nº</th><th style=${S.th}>Data</th><th style=${S.th}>Setor</th><th style=${{ ...S.th, textAlign: 'right' }}>Itens</th><th style=${S.th}>Status</th></tr></thead>
+          <tbody>
+            ${lista === null ? null : lista.map((r) => html`
+              <tr style=${S.tr} onClick=${() => abrirDetalhe(r)}>
+                <td style=${{ ...S.td, fontWeight: 700 }}>#${r.numero}</td>
+                <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${fmtDate(r.data)}</td>
+                <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${r.setor_requisitante || '—'}</td>
+                <td style=${{ ...S.td, textAlign: 'right' }}>${r.requisicao_itens?.[0]?.count ?? 0}</td>
+                <td style=${S.td}>${r.status === 'aberta' ? html`<${Badge} label="Aberta" fg="#B45309" bg="#FFFBEB" />` : html`<${Badge} label="Fechada" fg="#15803D" bg="#F0FDF4" />`}</td>
+              </tr>
+            `)}
+          </tbody>
+        </table>
+        ${lista === null && html`<div style=${S.empty}>Carregando…</div>`}
+        ${lista && lista.length === 0 && html`<div style=${S.empty}>Nenhuma requisição criada ainda.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+// =====================================================================
 // FROTA — Equipamentos e Manutenções (nativos)
 // =====================================================================
 const TIPOS_EQUIP = [['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'], ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro']];
@@ -1109,13 +1324,21 @@ function LegacyFrame() {
 // CASCA: tela inicial + abas
 // =====================================================================
 const APPS = [
-  { id: 'estoque', title: 'Estoque', icon: '📦', Comp: EstoqueScreen },
-  { id: 'lancamento', title: 'Lançamento', icon: '🧾', Comp: LancamentoScreen },
-  { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen },
-  { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen },
-  { id: 'manutencoes', title: 'Manutenções', icon: '🛠️', Comp: ManutencoesScreen },
-  { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame },
+  { id: 'estoque', title: 'Estoque', icon: '📦', Comp: EstoqueScreen, grupo: 'funcoes' },
+  { id: 'lancamento', title: 'Lançamento', icon: '🧾', Comp: LancamentoScreen, grupo: 'funcoes' },
+  { id: 'compras', title: 'Compras', icon: '🛒', Comp: ComprasScreen, grupo: 'funcoes' },
+  { id: 'manutencoes', title: 'Manutenções', icon: '🛠️', Comp: ManutencoesScreen, grupo: 'funcoes' },
+  { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen, grupo: 'utilitarios' },
+  { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen, grupo: 'utilitarios' },
+  { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame, grupo: 'utilitarios' },
 ];
+
+const GRUPOS = [
+  { id: 'funcoes', titulo: 'Funções' },
+  { id: 'utilitarios', titulo: 'Utilitários' },
+  { id: 'relatorios', titulo: 'Relatórios' },
+];
+const LIMITE_GRADE = 6; // acima disso, o grupo vira lista em vez de grade de ícones grandes
 
 function Shell({ userEmail }) {
   const [tabs, setTabs] = useState([]); // [{id, title, icon}]
@@ -1161,21 +1384,42 @@ function Shell({ userEmail }) {
 
       <div style=${{ flex: 1, minHeight: 0, position: 'relative' }}>
         <div style=${{ display: activeId === null ? 'block' : 'none', height: '100%', overflowY: 'auto' }}>
-          <div style=${{ padding: '40px 28px' }}>
-            <h1 style=${{ fontSize: 22, fontWeight: 700, margin: '0 0 4px' }}>Início</h1>
-            <p style=${{ fontSize: 13, color: 'var(--ink-soft)', margin: '0 0 28px' }}>Dê duplo clique numa opção para abrir.</p>
-            <div style=${{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 16, maxWidth: 720 }}>
-              ${APPS.map((app) => html`
-                <div
-                  key=${app.id}
-                  ondblclick=${() => openApp(app)}
-                  style=${{ background: '#fff', border: '1px solid var(--border)', borderRadius: 12, padding: '22px 16px', textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}
-                >
-                  <div style=${{ fontSize: 30, marginBottom: 10 }}>${app.icon}</div>
-                  <div style=${{ fontSize: 13, fontWeight: 600 }}>${app.title}</div>
+          <div style=${{ padding: '40px 28px', maxWidth: 760, margin: '0 auto' }}>
+            <h1 style=${{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>Início</h1>
+            <p style=${{ fontSize: 13, color: 'var(--ink-soft)', margin: '0 0 32px', textAlign: 'center' }}>Dê duplo clique numa opção para abrir.</p>
+
+            ${GRUPOS.map((g) => {
+              const appsDoGrupo = APPS.filter((a) => a.grupo === g.id);
+              const usarLista = appsDoGrupo.length > LIMITE_GRADE;
+              return html`
+                <div key=${g.id} style=${{ marginBottom: 34 }}>
+                  <div style=${{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'center', marginBottom: 14 }}>${g.titulo}</div>
+                  ${appsDoGrupo.length === 0 ? html`
+                    <div style=${{ textAlign: 'center', fontSize: 12.5, color: 'var(--ink-soft)', fontStyle: 'italic' }}>Nenhuma tela aqui ainda.</div>
+                  ` : usarLista ? html`
+                    <div style=${{ maxWidth: 420, margin: '0 auto', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                      ${appsDoGrupo.map((app) => html`
+                        <div key=${app.id} ondblclick=${() => openApp(app)}
+                          style=${{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: '1px solid var(--bg)', cursor: 'pointer', userSelect: 'none' }}>
+                          <span style=${{ fontSize: 18 }}>${app.icon}</span>
+                          <span style=${{ fontSize: 13.5, fontWeight: 500 }}>${app.title}</span>
+                        </div>
+                      `)}
+                    </div>
+                  ` : html`
+                    <div style=${{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 16 }}>
+                      ${appsDoGrupo.map((app) => html`
+                        <div key=${app.id} ondblclick=${() => openApp(app)}
+                          style=${{ width: 150, background: '#fff', border: '1px solid var(--border)', borderRadius: 12, padding: '22px 12px', textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}>
+                          <div style=${{ fontSize: 30, marginBottom: 10 }}>${app.icon}</div>
+                          <div style=${{ fontSize: 13, fontWeight: 600 }}>${app.title}</div>
+                        </div>
+                      `)}
+                    </div>
+                  `}
                 </div>
-              `)}
-            </div>
+              `;
+            })}
           </div>
         </div>
 
