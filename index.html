@@ -1473,6 +1473,110 @@ function RelatorioAnaliseCompras() {
 }
 
 // =====================================================================
+// TELA: USUÁRIOS
+// =====================================================================
+const ROLES = { admin: ['Admin', '#4338CA', '#EEF2FF'], operador: ['Operador', '#64748B', '#F1F5F9'] };
+
+function UsuariosScreen() {
+  const [lista, setLista] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [meuId, setMeuId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+
+  async function load() {
+    const { data, error } = await sb.from('perfis').select('*').order('nome_exibicao');
+    if (error) { setErr('Não foi possível carregar os usuários.'); return; }
+    setLista(data || []);
+  }
+  useEffect(() => {
+    load();
+    sb.auth.getUser().then(({ data }) => setMeuId(data?.user?.id || null));
+  }, []);
+
+  function notify(m) { setMsg(m); setTimeout(() => setMsg(''), 3000); }
+
+  function editar(p) { setEditando({ ...p }); }
+
+  async function salvar(ev) {
+    ev.preventDefault();
+    if (editando.id === meuId && editando.bloqueado) {
+      if (!window.confirm('Você está prestes a bloquear a si mesmo, e vai perder o acesso ao sistema. Continuar?')) return;
+    }
+    setBusy(true);
+    const { error } = await sb.from('perfis').update({
+      nome_exibicao: editando.nome_exibicao.trim(),
+      role: editando.role,
+      bloqueado: editando.bloqueado,
+    }).eq('id', editando.id);
+    setBusy(false);
+    if (error) { setErr('Não foi possível salvar.'); return; }
+    await load();
+    notify('Usuário atualizado.');
+    setEditando(null);
+  }
+
+  if (editando) {
+    return html`
+      <div style=${S.topbar}><button style=${{ ...S.linkBtn, marginRight: 10 }} onClick=${() => setEditando(null)}>← Usuários</button><h1 style=${S.h1}>Editar usuário</h1></div>
+      <div style=${S.content}>
+        <form style=${S.formCard} onSubmit=${salvar}>
+          <label style=${S.label}>Nome de exibição</label>
+          <input style=${S.input} value=${editando.nome_exibicao || ''} onInput=${(e) => setEditando({ ...editando, nome_exibicao: e.target.value })} required autofocus />
+          <label style=${S.label}>E-mail</label>
+          <input style=${{ ...S.input, background: 'var(--bg)', color: 'var(--ink-soft)' }} value=${editando.email || ''} disabled />
+          <label style=${S.label}>Papel</label>
+          <select style=${S.input} value=${editando.role} onChange=${(e) => setEditando({ ...editando, role: e.target.value })}>
+            <option value="operador">Operador</option>
+            <option value="admin">Admin</option>
+          </select>
+          <label style=${{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', cursor: 'pointer', marginTop: 14 }}>
+            <input type="checkbox" checked=${editando.bloqueado} onChange=${(e) => setEditando({ ...editando, bloqueado: e.target.checked })} style=${{ marginTop: 2 }} />
+            <span>Acesso bloqueado (o usuário não consegue mais entrar no sistema)</span>
+          </label>
+          <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+            <button type="button" style=${S.btnGhost} onClick=${() => setEditando(null)}>Cancelar</button>
+            <button type="submit" style=${S.btnPrimary} disabled=${busy}>Salvar alterações</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style=${S.topbar}><h1 style=${S.h1}>Usuários</h1></div>
+    <div style=${S.content}>
+      ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+      ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
+      <div style=${{ fontSize: 12.5, color: 'var(--ink-soft)', marginBottom: 14, maxWidth: 560 }}>
+        Criar uma conta nova ainda precisa ser feito fora daqui (pelo Supabase ou pela aba "Almoxarifado completo") — por segurança, essa tela só edita usuários que já existem.
+      </div>
+      <div style=${S.panel}>
+        <table style=${S.table}>
+          <thead><tr><th style=${S.th}>Nome</th><th style=${S.th}>E-mail</th><th style=${S.th}>Papel</th><th style=${S.th}>Status</th></tr></thead>
+          <tbody>
+            ${lista === null ? null : lista.map((p) => {
+              const r = ROLES[p.role] || ROLES.operador;
+              return html`
+                <tr style=${S.tr} onClick=${() => editar(p)}>
+                  <td style=${{ ...S.td, fontWeight: 500 }}>${p.nome_exibicao || '—'} ${p.id === meuId && html`<span style=${{ fontSize: 11, color: 'var(--ink-soft)' }}> (você)</span>`}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${p.email || '—'}</td>
+                  <td style=${S.td}><${Badge} label=${r[0]} fg=${r[1]} bg=${r[2]} /></td>
+                  <td style=${S.td}>${p.bloqueado ? html`<${Badge} label="Bloqueado" fg="#B91C1C" bg="#FEF2F2" />` : html`<${Badge} label="Ativo" fg="#15803D" bg="#F0FDF4" />`}</td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+        ${lista === null && html`<div style=${S.empty}>Carregando…</div>`}
+        ${lista && lista.length === 0 && html`<div style=${S.empty}>Nenhum usuário encontrado.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+// =====================================================================
 // FROTA — Equipamentos e Manutenções (nativos)
 // =====================================================================
 const TIPOS_EQUIP = [['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'], ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro']];
@@ -1821,6 +1925,7 @@ const APPS = [
   { id: 'inventario', title: 'Inventário', icon: '📋', Comp: InventarioScreen, grupo: 'funcoes' },
   { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen, grupo: 'utilitarios' },
   { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen, grupo: 'utilitarios' },
+  { id: 'usuarios', title: 'Usuários', icon: '👤', Comp: UsuariosScreen, grupo: 'utilitarios' },
   { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame, grupo: 'utilitarios' },
   { id: 'relatorios', title: 'Relatórios', icon: '📊', Comp: RelatoriosScreen, grupo: 'relatorios' },
 ];
