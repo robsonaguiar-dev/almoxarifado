@@ -983,6 +983,271 @@ function ComprasScreen() {
 }
 
 // =====================================================================
+// TELA: INVENTÁRIO (contagem física)
+// =====================================================================
+function InventarioScreen() {
+  const [view, setView] = useState('lista'); // lista | novo | detalhe
+  const [lista, setLista] = useState(null);
+  const [produtos, setProdutos] = useState(null);
+  const [categorias, setCategorias] = useState(null);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // criação
+  const [filtroCategoria, setFiltroCategoria] = useState('todos');
+  const [busca, setBusca] = useState('');
+  const [soBaixo, setSoBaixo] = useState(false);
+  const [selecionados, setSelecionados] = useState({});
+  const [observacao, setObservacao] = useState('');
+
+  // detalhe
+  const [inventario, setInventario] = useState(null);
+  const [itens, setItens] = useState(null);
+  const [contagens, setContagens] = useState({});
+
+  async function loadLista() {
+    const { data, error } = await sb.from('inventarios').select('*, inventario_itens(count)').order('numero', { ascending: false });
+    if (error) { setErr('Não foi possível carregar os inventários.'); return; }
+    setLista(data || []);
+  }
+  async function loadApoio() {
+    const [{ data: p }, { data: c }] = await Promise.all([
+      sb.from('product_balances').select('*'),
+      sb.from('categorias').select('*').order('nome'),
+    ]);
+    setProdutos(p || []); setCategorias(c || []);
+  }
+  useEffect(() => { loadLista(); loadApoio(); }, []);
+
+  function nomeCategoria(chave) { const c = (categorias || []).find((x) => x.chave === chave); return c ? c.nome : (chave || '—'); }
+
+  function notify(m) { setMsg(m); setTimeout(() => setMsg(''), 3000); }
+
+  const produtosFiltrados = useMemo(() => {
+    const q = normalize(busca);
+    return (produtos || [])
+      .filter((p) => filtroCategoria === 'todos' || p.categoria === filtroCategoria)
+      .filter((p) => !soBaixo || isLow(p))
+      .filter((p) => !q || normalize(p.produto).includes(q) || String(p.codigo).includes(busca))
+      .sort((a, b) => a.produto.localeCompare(b.produto));
+  }, [produtos, filtroCategoria, busca, soBaixo]);
+
+  function iniciarNovo() {
+    setFiltroCategoria('todos'); setBusca(''); setSoBaixo(false); setObservacao(''); setSelecionados({});
+    setView('novo');
+  }
+
+  async function criarInventario(ev) {
+    ev.preventDefault();
+    const itensSelecionados = produtosFiltrados.filter((p) => selecionados[p.codigo] !== false);
+    if (itensSelecionados.length === 0) { setErr('Selecione ao menos um item.'); return; }
+    setBusy(true);
+    const { data: userData } = await sb.auth.getUser();
+    const { data: inv, error } = await sb.from('inventarios').insert([{
+      categoria_filtro: filtroCategoria === 'todos' ? null : filtroCategoria,
+      observacao: observacao.trim(), criado_por: userData?.user?.email || '',
+    }]).select().single();
+    if (error || !inv) { setBusy(false); setErr('Não foi possível criar o inventário.'); return; }
+    const linhas = itensSelecionados.map((p) => ({ inventario_id: inv.id, codigo: p.codigo, produto: p.produto, categoria: p.categoria, unidade: p.unidade, saldo_sistema: Number(p.saldo) || 0 }));
+    const { error: itErr } = await sb.from('inventario_itens').insert(linhas);
+    setBusy(false);
+    if (itErr) { setErr('Inventário criado, mas houve erro ao gerar os itens.'); return; }
+    await loadLista();
+    notify(`Inventário #${inv.numero} iniciado com ${itensSelecionados.length} itens.`);
+    abrirDetalhe(inv);
+  }
+
+  async function abrirDetalhe(inv) {
+    setInventario(inv); setItens(null); setContagens({}); setView('detalhe');
+    const { data } = await sb.from('inventario_itens').select('*').eq('inventario_id', inv.id).order('produto');
+    setItens(data || []);
+    const c = {};
+    (data || []).forEach((i) => { if (i.contagem_fisica !== null) c[i.id] = String(i.contagem_fisica); });
+    setContagens(c);
+  }
+
+  async function salvarProgresso() {
+    if (!itens) return;
+    setBusy(true);
+    const alterados = itens.filter((i) => contagens[i.id] !== undefined && contagens[i.id] !== '' && Number(contagens[i.id]) !== i.contagem_fisica);
+    for (const i of alterados) {
+      await sb.from('inventario_itens').update({ contagem_fisica: Number(contagens[i.id]) }).eq('id', i.id);
+    }
+    setBusy(false);
+    await abrirDetalhe(inventario);
+    notify(alterados.length > 0 ? `${alterados.length} contagem(ns) salva(s).` : 'Nada novo pra salvar.');
+  }
+
+  async function concluirInventario() {
+    if (!itens) return;
+    const contados = itens.filter((i) => contagens[i.id] !== undefined && contagens[i.id] !== '');
+    const naoContados = itens.length - contados.length;
+    const diferentes = contados.filter((i) => Number(contagens[i.id]) !== i.saldo_sistema);
+    const aviso = naoContados > 0
+      ? `${naoContados} item(ns) ainda não foram contados e ficarão de fora. Concluir mesmo assim? Isso vai gerar ${diferentes.length} ajuste(s) de estoque e não pode ser desfeito.`
+      : `Concluir inventário? Isso vai gerar ${diferentes.length} ajuste(s) de estoque e não pode ser desfeito.`;
+    if (!window.confirm(aviso)) return;
+    setBusy(true);
+    for (const i of contados) {
+      if (Number(contagens[i.id]) !== i.contagem_fisica) await sb.from('inventario_itens').update({ contagem_fisica: Number(contagens[i.id]) }).eq('id', i.id);
+    }
+    const { data: userData } = await sb.auth.getUser();
+    const criado_por = userData?.user?.email || '';
+    const movs = diferentes.map((i) => {
+      const diff = Number(contagens[i.id]) - i.saldo_sistema;
+      return { data: todayISO(), tipo: diff > 0 ? 'entrada' : 'saida', codigo: i.codigo, produto: i.produto, quantidade: Math.abs(diff), valor: 0, valor_total: 0, marca: '', nota_fiscal: `Ajuste inventário #${inventario.numero}`, categoria: i.categoria, criado_por };
+    });
+    if (movs.length > 0) await sb.from('movements').insert(movs);
+    await sb.from('inventarios').update({ status: 'fechado', fechado_por: criado_por, fechado_em: new Date().toISOString() }).eq('id', inventario.id);
+    setBusy(false);
+    await Promise.all([loadLista(), loadApoio()]);
+    notify(`Inventário #${inventario.numero} concluído — ${diferentes.length} ajuste(s) aplicado(s).`);
+    abrirDetalhe({ ...inventario, status: 'fechado' });
+  }
+
+  // ---------- lista ----------
+  if (view === 'lista') {
+    return html`
+      <div style=${S.topbar}><h1 style=${S.h1}>Inventário</h1><button style=${S.btnPrimary} onClick=${iniciarNovo}>+ Novo inventário</button></div>
+      <div style=${S.content}>
+        ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+        ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Nº</th><th style=${S.th}>Data</th><th style=${S.th}>Categoria</th><th style=${{ ...S.th, textAlign: 'right' }}>Itens</th><th style=${S.th}>Status</th></tr></thead>
+            <tbody>
+              ${lista === null ? null : lista.map((inv) => html`
+                <tr style=${S.tr} onClick=${() => abrirDetalhe(inv)}>
+                  <td style=${{ ...S.td, fontWeight: 700 }}>#${inv.numero}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${fmtDate(inv.data)}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${inv.categoria_filtro ? nomeCategoria(inv.categoria_filtro) : 'Todas'}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}>${inv.inventario_itens?.[0]?.count ?? 0}</td>
+                  <td style=${S.td}>${inv.status === 'aberto' ? html`<${Badge} label="Aberto" fg="#B45309" bg="#FFFBEB" />` : html`<${Badge} label="Fechado" fg="#15803D" bg="#F0FDF4" />`}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+          ${lista === null && html`<div style=${S.empty}>Carregando…</div>`}
+          ${lista && lista.length === 0 && html`<div style=${S.empty}>Nenhum inventário criado ainda.</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  // ---------- novo ----------
+  if (view === 'novo') {
+    const totalSelecionados = produtosFiltrados.filter((p) => selecionados[p.codigo] !== false).length;
+    return html`
+      <div style=${S.topbar}><button style=${{ ...S.linkBtn, marginRight: 10 }} onClick=${() => setView('lista')}>← Inventário</button><h1 style=${S.h1}>Novo inventário</h1></div>
+      <div style=${S.content}>
+        ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+        <div style=${{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+          <select style=${{ ...S.input, width: 'auto' }} value=${filtroCategoria} onChange=${(e) => setFiltroCategoria(e.target.value)}>
+            <option value="todos">Todas as categorias</option>
+            ${(categorias || []).map((c) => html`<option value=${c.chave}>${c.nome}</option>`)}
+          </select>
+          <input style=${{ ...S.input, width: 220 }} placeholder="Buscar produto…" value=${busca} onInput=${(e) => setBusca(e.target.value)} />
+          <label style=${{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-soft)', cursor: 'pointer' }}>
+            <input type="checkbox" checked=${soBaixo} onChange=${(e) => setSoBaixo(e.target.checked)} /> Só estoque baixo
+          </label>
+        </div>
+
+        <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+          <span style=${{ fontSize: 12.5, color: 'var(--ink-soft)' }}><strong style=${{ color: 'var(--ink)' }}>${totalSelecionados}</strong> de ${produtosFiltrados.length} selecionado(s)</span>
+          <div style=${{ display: 'flex', gap: 10 }}>
+            <button type="button" style=${{ ...S.linkBtn, fontSize: 12 }} onClick=${() => { const s = {}; produtosFiltrados.forEach((p) => (s[p.codigo] = true)); setSelecionados({ ...selecionados, ...s }); }}>Marcar todos</button>
+            <button type="button" style=${{ ...S.linkBtn, fontSize: 12, color: 'var(--ink-soft)' }} onClick=${() => { const s = {}; produtosFiltrados.forEach((p) => (s[p.codigo] = false)); setSelecionados({ ...selecionados, ...s }); }}>Desmarcar todos</button>
+          </div>
+        </div>
+
+        <div style=${{ ...S.panel, maxHeight: 320, overflowY: 'auto' }}>
+          ${produtosFiltrados.map((p) => {
+            const marcado = selecionados[p.codigo] !== false;
+            return html`
+              <label key=${p.codigo} style=${{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', borderBottom: '1px solid var(--bg)', cursor: 'pointer' }}>
+                <input type="checkbox" checked=${marcado} onChange=${(e) => setSelecionados({ ...selecionados, [p.codigo]: e.target.checked })} />
+                <span style=${{ flex: 1, fontSize: 13 }}>${p.produto}</span>
+                <span style=${{ fontSize: 11.5, color: 'var(--ink-soft)', background: 'var(--bg)', padding: '3px 8px', borderRadius: 5 }}>${nomeCategoria(p.categoria)}</span>
+                <span style=${{ fontSize: 12, color: isLow(p) ? 'var(--danger)' : 'var(--ink-soft)', width: 60, textAlign: 'right' }}>${p.saldo} ${p.unidade || ''}</span>
+              </label>
+            `;
+          })}
+          ${produtosFiltrados.length === 0 && html`<div style=${S.empty}>Nenhum produto encontrado com esses filtros.</div>`}
+        </div>
+
+        <label style=${S.label}>Observação</label>
+        <textarea style=${{ ...S.input, minHeight: 50, resize: 'vertical', maxWidth: 480 }} value=${observacao} onInput=${(e) => setObservacao(e.target.value)} placeholder="opcional"></textarea>
+
+        <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+          <button type="button" style=${S.btnGhost} onClick=${() => setView('lista')}>Cancelar</button>
+          <button type="button" style=${S.btnPrimary} onClick=${criarInventario} disabled=${busy}>Iniciar inventário</button>
+        </div>
+      </div>
+    `;
+  }
+
+  // ---------- detalhe ----------
+  if (view === 'detalhe' && inventario) {
+    const contadosCount = (itens || []).filter((i) => contagens[i.id] !== undefined && contagens[i.id] !== '').length;
+    const diferentesCount = (itens || []).filter((i) => contagens[i.id] !== undefined && contagens[i.id] !== '' && Number(contagens[i.id]) !== i.saldo_sistema).length;
+    return html`
+      <div style=${S.topbar}>
+        <div><button style=${{ ...S.linkBtn, marginBottom: 6, display: 'block' }} onClick=${() => setView('lista')}>← Inventário</button><h1 style=${S.h1}>Inventário #${inventario.numero}</h1></div>
+        ${inventario.status === 'aberto' ? html`<${Badge} label="Aberto" fg="#B45309" bg="#FFFBEB" />` : html`<${Badge} label="Fechado" fg="#15803D" bg="#F0FDF4" />`}
+      </div>
+      <div style=${S.content}>
+        ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+        ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
+
+        <div style=${{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: '6px 16px', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', marginBottom: 14, maxWidth: 480 }}>
+          <div><div style=${{ fontSize: 10.5, color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Contados</div><div style=${{ fontSize: 16, fontWeight: 700 }}>${contadosCount} / ${(itens || []).length}</div></div>
+          <div style=${{ textAlign: 'right' }}><div style=${{ fontSize: 10.5, color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Com diferença</div><div style=${{ fontSize: 16, fontWeight: 700, color: diferentesCount > 0 ? 'var(--warning)' : 'var(--ink)' }}>${diferentesCount}</div></div>
+        </div>
+
+        ${inventario.status === 'aberto' && html`
+          <div style=${{ display: 'flex', gap: 10, marginBottom: 16 }}>
+            <button style=${S.btnGhost} onClick=${salvarProgresso} disabled=${busy}>Salvar progresso</button>
+            <button style=${S.btnPrimary} onClick=${concluirInventario} disabled=${busy}>Concluir inventário</button>
+          </div>
+        `}
+
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Código</th><th style=${S.th}>Produto</th><th style=${{ ...S.th, textAlign: 'right' }}>Sistema</th><th style=${{ ...S.th, textAlign: 'right' }}>Contagem física</th><th style=${{ ...S.th, textAlign: 'right' }}>Diferença</th></tr></thead>
+            <tbody>
+              ${itens === null ? null : itens.map((i) => {
+                const v = contagens[i.id];
+                const tem = v !== undefined && v !== '';
+                const diff = tem ? Number(v) - i.saldo_sistema : null;
+                return html`
+                  <tr style=${{ ...S.tr, cursor: 'default' }}>
+                    <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>#${String(i.codigo).padStart(3, '0')}</td>
+                    <td style=${{ ...S.td, fontWeight: 500 }}>${i.produto}</td>
+                    <td style=${{ ...S.td, textAlign: 'right', color: 'var(--ink-soft)' }}>${i.saldo_sistema} ${i.unidade || ''}</td>
+                    <td style=${{ ...S.td, textAlign: 'right' }}>
+                      ${inventario.status === 'aberto'
+                        ? html`<input type="number" min="0" step="0.01" value=${v ?? ''} onInput=${(e) => setContagens({ ...contagens, [i.id]: e.target.value })} style=${{ ...S.input, width: 90, textAlign: 'right', padding: '6px 8px' }} placeholder="—" />`
+                        : (i.contagem_fisica ?? '—')}
+                    </td>
+                    <td style=${{ ...S.td, textAlign: 'right', fontWeight: 700, color: diff === null ? 'var(--ink-soft)' : diff === 0 ? 'var(--success)' : 'var(--danger)' }}>
+                      ${diff === null ? '—' : diff > 0 ? `+${diff}` : diff}
+                    </td>
+                  </tr>
+                `;
+              })}
+            </tbody>
+          </table>
+          ${itens === null && html`<div style=${S.empty}>Carregando…</div>`}
+        </div>
+      </div>
+    `;
+  }
+
+  return null;
+}
+
+// =====================================================================
 // FROTA — Equipamentos e Manutenções (nativos)
 // =====================================================================
 const TIPOS_EQUIP = [['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'], ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro']];
@@ -1328,6 +1593,7 @@ const APPS = [
   { id: 'lancamento', title: 'Lançamento', icon: '🧾', Comp: LancamentoScreen, grupo: 'funcoes' },
   { id: 'compras', title: 'Compras', icon: '🛒', Comp: ComprasScreen, grupo: 'funcoes' },
   { id: 'manutencoes', title: 'Manutenções', icon: '🛠️', Comp: ManutencoesScreen, grupo: 'funcoes' },
+  { id: 'inventario', title: 'Inventário', icon: '📋', Comp: InventarioScreen, grupo: 'funcoes' },
   { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen, grupo: 'utilitarios' },
   { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen, grupo: 'utilitarios' },
   { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame, grupo: 'utilitarios' },
