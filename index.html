@@ -1248,6 +1248,231 @@ function InventarioScreen() {
 }
 
 // =====================================================================
+// TELA: RELATÓRIOS
+// =====================================================================
+function RelatoriosScreen() {
+  const [sub, setSub] = useState('parado'); // parado | consumo | analise
+
+  return html`
+    <div style=${S.topbar}><h1 style=${S.h1}>Relatórios</h1></div>
+    <div style=${S.content}>
+      <div style=${{ display: 'flex', gap: 4, background: 'var(--bg)', padding: 3, borderRadius: 8, marginBottom: 18, maxWidth: 460 }}>
+        ${[['parado', 'Estoque parado'], ['consumo', 'Consumo por área'], ['analise', 'Análise de compras']].map(([v, l]) => html`
+          <button type="button" onClick=${() => setSub(v)} style=${{ flex: 1, border: 'none', background: sub === v ? '#fff' : 'transparent', boxShadow: sub === v ? '0 1px 2px rgba(0,0,0,0.06)' : 'none', padding: '7px 4px', fontSize: 12.5, fontWeight: 600, color: sub === v ? 'var(--ink)' : 'var(--ink-soft)', cursor: 'pointer', borderRadius: 6 }}>${l}</button>
+        `)}
+      </div>
+      ${sub === 'parado' && html`<${RelatorioEstoqueParado} />`}
+      ${sub === 'consumo' && html`<${RelatorioConsumo} />`}
+      ${sub === 'analise' && html`<${RelatorioAnaliseCompras} />`}
+    </div>
+  `;
+}
+
+function RelatorioEstoqueParado() {
+  const [dias, setDias] = useState('30');
+  const [produtos, setProdutos] = useState(null);
+  const [ultimaMov, setUltimaMov] = useState(null);
+  const [err, setErr] = useState('');
+
+  async function load() {
+    const [{ data: p, error: e1 }, { data: u, error: e2 }] = await Promise.all([
+      sb.from('product_balances').select('*'),
+      sb.from('produto_ultima_movimentacao').select('*'),
+    ]);
+    if (e1 || e2) { setErr('Não foi possível carregar o relatório.'); return; }
+    setProdutos(p || []); setUltimaMov(u || []);
+  }
+  useEffect(() => { load(); }, []);
+
+  const lista = useMemo(() => {
+    if (!produtos || !ultimaMov) return null;
+    const hoje = new Date(todayISO() + 'T00:00:00').getTime();
+    const mapa = {}; ultimaMov.forEach((u) => (mapa[u.codigo] = u.ultima_saida));
+    return produtos
+      .filter((p) => (Number(p.saldo) || 0) > 0)
+      .map((p) => {
+        const ultima = mapa[p.codigo] || null;
+        const diasParado = ultima ? Math.floor((hoje - new Date(ultima + 'T00:00:00').getTime()) / 86400000) : null;
+        return { ...p, ultimaSaida: ultima, diasParado };
+      })
+      .filter((p) => p.diasParado === null || p.diasParado >= Number(dias))
+      .sort((a, b) => (b.diasParado ?? 999999) - (a.diasParado ?? 999999));
+  }, [produtos, ultimaMov, dias]);
+
+  return html`
+    ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+    <div style=${{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+      <span style=${{ fontSize: 12.5, color: 'var(--ink-soft)' }}>Sem saída há pelo menos</span>
+      <select style=${{ ...S.input, width: 'auto' }} value=${dias} onChange=${(e) => setDias(e.target.value)}>
+        <option value="30">30 dias</option><option value="60">60 dias</option><option value="90">90 dias</option><option value="180">180 dias</option>
+      </select>
+    </div>
+    <div style=${S.panel}>
+      <table style=${S.table}>
+        <thead><tr><th style=${S.th}>Produto</th><th style=${S.th}>Categoria</th><th style=${{ ...S.th, textAlign: 'right' }}>Saldo</th><th style=${{ ...S.th, textAlign: 'right' }}>Valor parado</th><th style=${{ ...S.th, textAlign: 'right' }}>Última saída</th></tr></thead>
+        <tbody>
+          ${lista === null ? null : lista.map((p) => html`
+            <tr style=${{ ...S.tr, cursor: 'default' }}>
+              <td style=${{ ...S.td, fontWeight: 500 }}>${p.produto}</td>
+              <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${p.categoria}</td>
+              <td style=${{ ...S.td, textAlign: 'right' }}>${p.saldo} ${p.unidade || ''}</td>
+              <td style=${{ ...S.td, textAlign: 'right', fontWeight: 600 }}>${fmtBRL((Number(p.saldo) || 0) * (Number(p.custo_medio) || 0))}</td>
+              <td style=${{ ...S.td, textAlign: 'right' }}>
+                ${p.ultimaSaida ? html`<div>${fmtDate(p.ultimaSaida)}</div><div style=${{ fontSize: 11, color: 'var(--warning)' }}>há ${p.diasParado} dia(s)</div>` : html`<span style=${{ color: 'var(--danger)', fontWeight: 600 }}>nunca saiu</span>`}
+              </td>
+            </tr>
+          `)}
+        </tbody>
+      </table>
+      ${lista === null && html`<div style=${S.empty}>Carregando…</div>`}
+      ${lista && lista.length === 0 && html`<div style=${S.empty}>Nenhum produto parado com esse filtro — ótimo sinal!</div>`}
+    </div>
+  `;
+}
+
+function RelatorioConsumo() {
+  const [agruparPor, setAgruparPor] = useState('area');
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [resultado, setResultado] = useState(null);
+  const [err, setErr] = useState('');
+
+  async function gerar() {
+    setResultado(null); setErr('');
+    let q = sb.from('movements').select('*').eq('tipo', 'saida');
+    if (de) q = q.gte('data', de);
+    if (ate) q = q.lte('data', ate);
+    const { data, error } = await q;
+    if (error) { setErr('Não foi possível gerar o relatório.'); return; }
+    const grupos = {};
+    (data || []).forEach((m) => {
+      const chave = agruparPor === 'area' ? (m.area_finalidade || '(sem área informada)') : (m.solicitante || '(não informado)');
+      if (!grupos[chave]) grupos[chave] = { chave, qtd: 0, valor: 0, saidas: 0 };
+      grupos[chave].qtd += Number(m.quantidade) || 0;
+      grupos[chave].valor += Number(m.valor_total) || 0;
+      grupos[chave].saidas += 1;
+    });
+    setResultado(Object.values(grupos).sort((a, b) => b.valor - a.valor));
+  }
+
+  return html`
+    ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+    <div style=${{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+      <select style=${{ ...S.input, width: 'auto' }} value=${agruparPor} onChange=${(e) => setAgruparPor(e.target.value)}>
+        <option value="area">Por área/finalidade</option>
+        <option value="solicitante">Por solicitante</option>
+      </select>
+      <input type="date" style=${{ ...S.input, width: 'auto' }} value=${de} onInput=${(e) => setDe(e.target.value)} />
+      <span style=${{ fontSize: 12.5, color: 'var(--ink-soft)' }}>até</span>
+      <input type="date" style=${{ ...S.input, width: 'auto' }} value=${ate} onInput=${(e) => setAte(e.target.value)} />
+      <button style=${S.btnPrimary} onClick=${gerar}>Gerar</button>
+    </div>
+    ${resultado === null ? html`
+      <div style=${{ ...S.panel, padding: '32px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
+        <div style=${{ fontSize: 28 }}>📊</div>
+        <div style=${{ fontSize: 13, color: 'var(--ink-soft)' }}>Escolha o período e clique em "Gerar".</div>
+      </div>
+    ` : html`
+      <div style=${S.panel}>
+        <table style=${S.table}>
+          <thead><tr><th style=${S.th}>${agruparPor === 'area' ? 'Área / Finalidade' : 'Solicitante'}</th><th style=${{ ...S.th, textAlign: 'right' }}>Nº de saídas</th><th style=${{ ...S.th, textAlign: 'right' }}>Quantidade</th><th style=${{ ...S.th, textAlign: 'right' }}>Valor total</th></tr></thead>
+          <tbody>
+            ${resultado.map((r) => html`
+              <tr style=${{ ...S.tr, cursor: 'default' }}>
+                <td style=${{ ...S.td, fontWeight: 500 }}>${r.chave}</td>
+                <td style=${{ ...S.td, textAlign: 'right' }}>${r.saidas}</td>
+                <td style=${{ ...S.td, textAlign: 'right' }}>${r.qtd}</td>
+                <td style=${{ ...S.td, textAlign: 'right', fontWeight: 600 }}>${fmtBRL(r.valor)}</td>
+              </tr>
+            `)}
+          </tbody>
+        </table>
+        ${resultado.length === 0 && html`<div style=${S.empty}>Nenhuma saída com área/solicitante informado nesse período.</div>`}
+      </div>
+    `}
+  `;
+}
+
+function RelatorioAnaliseCompras() {
+  const [categoria, setCategoria] = useState('todos');
+  const [categorias, setCategorias] = useState(null);
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [resultado, setResultado] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => { sb.from('categorias').select('*').order('nome').then(({ data }) => setCategorias(data || [])); }, []);
+
+  async function gerar() {
+    setResultado(null); setErr('');
+    let q = sb.from('movements').select('*').eq('tipo', 'entrada');
+    if (categoria !== 'todos') q = q.eq('categoria', categoria);
+    if (de) q = q.gte('data', de);
+    if (ate) q = q.lte('data', ate);
+    const { data, error } = await q;
+    if (error) { setErr('Não foi possível gerar a análise.'); return; }
+    const porProduto = {};
+    (data || []).forEach((m) => {
+      if (!porProduto[m.codigo]) porProduto[m.codigo] = { codigo: m.codigo, produto: m.produto, categoria: m.categoria, compras: [] };
+      porProduto[m.codigo].compras.push(m);
+    });
+    const lista = Object.values(porProduto).map((p) => {
+      const totalQtd = p.compras.reduce((s, c) => s + Number(c.quantidade), 0);
+      const totalGasto = p.compras.reduce((s, c) => s + Number(c.quantidade) * Number(c.valor || 0), 0);
+      return { ...p, totalQtd, totalGasto, custoMedio: totalQtd ? totalGasto / totalQtd : 0 };
+    }).sort((a, b) => a.produto.localeCompare(b.produto));
+    setResultado(lista);
+  }
+
+  return html`
+    ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+    <div style=${{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 14 }}>
+      <select style=${{ ...S.input, width: 'auto' }} value=${categoria} onChange=${(e) => setCategoria(e.target.value)}>
+        <option value="todos">Todas as categorias</option>
+        ${(categorias || []).map((c) => html`<option value=${c.chave}>${c.nome}</option>`)}
+      </select>
+      <input type="date" style=${{ ...S.input, width: 'auto' }} value=${de} onInput=${(e) => setDe(e.target.value)} />
+      <span style=${{ fontSize: 12.5, color: 'var(--ink-soft)' }}>até</span>
+      <input type="date" style=${{ ...S.input, width: 'auto' }} value=${ate} onInput=${(e) => setAte(e.target.value)} />
+      <button style=${S.btnPrimary} onClick=${gerar}>Gerar</button>
+    </div>
+    ${resultado === null ? html`
+      <div style=${{ ...S.panel, padding: '32px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, textAlign: 'center' }}>
+        <div style=${{ fontSize: 28 }}>🧾</div>
+        <div style=${{ fontSize: 13, color: 'var(--ink-soft)' }}>Escolha os filtros e clique em "Gerar".</div>
+      </div>
+    ` : resultado.length === 0 ? html`<div style=${S.panel}><div style=${S.empty}>Nenhuma entrada encontrada com esses filtros.</div></div>` : html`
+      <div style=${{ display: 'flex', justifyContent: 'space-between', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, padding: '10px 14px', marginBottom: 16, maxWidth: 480 }}>
+        <div><div style=${{ fontSize: 10.5, color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Produtos analisados</div><div style=${{ fontSize: 16, fontWeight: 700 }}>${resultado.length}</div></div>
+        <div style=${{ textAlign: 'right' }}><div style=${{ fontSize: 10.5, color: 'var(--ink-soft)', fontWeight: 600, textTransform: 'uppercase' }}>Total gasto</div><div style=${{ fontSize: 16, fontWeight: 700 }}>${fmtBRL(resultado.reduce((s, p) => s + p.totalGasto, 0))}</div></div>
+      </div>
+      ${resultado.map((p) => html`
+        <div key=${p.codigo} style=${{ marginBottom: 18 }}>
+          <div style=${{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', borderBottom: '1px solid var(--border)', paddingBottom: 6, marginBottom: 6, flexWrap: 'wrap', gap: '2px 12px' }}>
+            <span style=${{ fontWeight: 700, fontSize: 14 }}>${p.produto}</span>
+            <span style=${{ fontSize: 12, color: 'var(--ink-soft)' }}>${p.totalQtd} · custo médio ${fmtBRL(p.custoMedio)} · total ${fmtBRL(p.totalGasto)}</span>
+          </div>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Data</th><th style=${S.th}>Marca</th><th style=${{ ...S.th, textAlign: 'right' }}>Qtd.</th><th style=${{ ...S.th, textAlign: 'right' }}>Valor unit.</th><th style=${{ ...S.th, textAlign: 'right' }}>Total</th></tr></thead>
+            <tbody>
+              ${p.compras.map((c, idx) => html`
+                <tr key=${idx} style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${fmtDate(c.data)}</td>
+                  <td style=${S.td}>${c.marca || '—'}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}>${c.quantidade}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}>${c.valor ? fmtBRL(c.valor) : '—'}</td>
+                  <td style=${{ ...S.td, textAlign: 'right', fontWeight: 600 }}>${fmtBRL(Number(c.valor || 0) * Number(c.quantidade))}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+      `)}
+    `}
+  `;
+}
+
+// =====================================================================
 // FROTA — Equipamentos e Manutenções (nativos)
 // =====================================================================
 const TIPOS_EQUIP = [['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'], ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro']];
@@ -1597,6 +1822,7 @@ const APPS = [
   { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen, grupo: 'utilitarios' },
   { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen, grupo: 'utilitarios' },
   { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame, grupo: 'utilitarios' },
+  { id: 'relatorios', title: 'Relatórios', icon: '📊', Comp: RelatoriosScreen, grupo: 'relatorios' },
 ];
 
 const GRUPOS = [
