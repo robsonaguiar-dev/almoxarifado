@@ -313,7 +313,8 @@ function LancamentoScreen() {
 function getMinimo(p) { return p.estoque_minimo != null ? Number(p.estoque_minimo) : 5; }
 function isLow(p) { return (Number(p.saldo) || 0) <= getMinimo(p); }
 
-function EstoqueScreen() {
+function EstoqueScreen({ role }) {
+  const isAdmin = role === 'admin';
   const [produtos, setProdutos] = useState(null);
   const [categorias, setCategorias] = useState(null);
   const [unidades, setUnidades] = useState(null);
@@ -370,6 +371,7 @@ function EstoqueScreen() {
     setEditando({ produto: '', categoria: (categorias || [])[0]?.chave || '', unidade: (unidades || [])[0]?.sigla || 'un', fornecedor_id: '', codigo_barras: '', estoque_minimo: '5', e_ferramenta: false });
   }
   function editarProduto(p) {
+    if (!isAdmin) { setErr('Só administradores podem editar produtos. Fale com um admin do sistema.'); return; }
     setEditando({
       codigo: p.codigo, produto: p.produto, categoria: p.categoria, unidade: p.unidade || 'un',
       fornecedor_id: p.fornecedor_id || '', codigo_barras: p.codigo_barras || '',
@@ -454,7 +456,7 @@ function EstoqueScreen() {
   }
 
   return html`
-    <div style=${S.topbar}><h1 style=${S.h1}>Estoque</h1><button style=${S.btnPrimary} onClick=${novoProduto}>+ Novo produto</button></div>
+    <div style=${S.topbar}><h1 style=${S.h1}>Estoque</h1>${isAdmin && html`<button style=${S.btnPrimary} onClick=${novoProduto}>+ Novo produto</button>`}</div>
     <div style=${S.content}>
       ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
       ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
@@ -1584,7 +1586,8 @@ const STATUS_EQUIP = { ativo: ['Ativo', '#15803D', '#F0FDF4'], em_manutencao: ['
 const STATUS_MANUT = { aberta: ['Aberta', '#B45309', '#FFFBEB'], em_andamento: ['Em andamento', '#2563EB', '#EFF6FF'], concluida: ['Concluída', '#15803D', '#F0FDF4'], cancelada: ['Cancelada', '#B91C1C', '#FEF2F2'] };
 const TIPOS_MANUT = [['preventiva', 'Preventiva'], ['corretiva', 'Corretiva'], ['revisao', 'Revisão']];
 
-function EquipamentosScreen() {
+function EquipamentosScreen({ role }) {
+  const isAdmin = role === 'admin';
   const [lista, setLista] = useState(null);
   const [editando, setEditando] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1598,6 +1601,10 @@ function EquipamentosScreen() {
   useEffect(() => { load(); }, []);
 
   function novo() { setEditando({ nome: '', tipo: 'carro', identificacao: '', modelo: '', ano_fabricacao: '', km_horas_atual: '', status: 'ativo' }); }
+  function editar(e) {
+    if (!isAdmin) { setErr('Só administradores podem editar equipamentos. Fale com um admin do sistema.'); return; }
+    setEditando({ ...e });
+  }
 
   async function salvar(ev) {
     ev.preventDefault();
@@ -1671,7 +1678,7 @@ function EquipamentosScreen() {
   }
 
   return html`
-    <div style=${S.topbar}><h1 style=${S.h1}>Equipamentos</h1><button style=${S.btnPrimary} onClick=${novo}>+ Novo equipamento</button></div>
+    <div style=${S.topbar}><h1 style=${S.h1}>Equipamentos</h1>${isAdmin && html`<button style=${S.btnPrimary} onClick=${novo}>+ Novo equipamento</button>`}</div>
     <div style=${S.content}>
       ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
       <div style=${S.panel}>
@@ -1681,7 +1688,7 @@ function EquipamentosScreen() {
             ${lista === null ? null : lista.map((e) => {
               const st = STATUS_EQUIP[e.status] || STATUS_EQUIP.ativo;
               return html`
-                <tr style=${S.tr} onClick=${() => setEditando({ ...e })}>
+                <tr style=${S.tr} onClick=${() => editar(e)}>
                   <td style=${{ ...S.td, fontWeight: 500 }}>${e.nome}</td>
                   <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${(TIPOS_EQUIP.find((t) => t[0] === e.tipo) || [e.tipo, e.tipo])[1]}</td>
                   <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${e.identificacao || '—'}</td>
@@ -1923,9 +1930,9 @@ const APPS = [
   { id: 'compras', title: 'Compras', icon: '🛒', Comp: ComprasScreen, grupo: 'funcoes' },
   { id: 'manutencoes', title: 'Manutenções', icon: '🛠️', Comp: ManutencoesScreen, grupo: 'funcoes' },
   { id: 'inventario', title: 'Inventário', icon: '📋', Comp: InventarioScreen, grupo: 'funcoes' },
-  { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen, grupo: 'utilitarios' },
+  { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen, grupo: 'utilitarios', adminOnly: true },
   { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen, grupo: 'utilitarios' },
-  { id: 'usuarios', title: 'Usuários', icon: '👤', Comp: UsuariosScreen, grupo: 'utilitarios' },
+  { id: 'usuarios', title: 'Usuários', icon: '👤', Comp: UsuariosScreen, grupo: 'utilitarios', adminOnly: true },
   { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame, grupo: 'utilitarios' },
   { id: 'relatorios', title: 'Relatórios', icon: '📊', Comp: RelatoriosScreen, grupo: 'relatorios' },
 ];
@@ -1937,12 +1944,14 @@ const GRUPOS = [
 ];
 const LIMITE_GRADE = 6; // acima disso, o grupo vira lista em vez de grade de ícones grandes
 
-function Shell({ userEmail }) {
+function Shell({ userEmail, role }) {
   const [tabs, setTabs] = useState([]); // [{id, title, icon}]
   const [activeId, setActiveId] = useState(null); // null = home
   const [homeGrupo, setHomeGrupo] = useState('funcoes'); // categoria ativa na tela inicial
+  const isAdmin = role === 'admin';
 
   function openApp(app) {
+    if (app.adminOnly && !isAdmin) return;
     setTabs((prev) => (prev.some((t) => t.id === app.id) ? prev : [...prev, { id: app.id, title: app.title, icon: app.icon }]));
     setActiveId(app.id);
   }
@@ -1997,7 +2006,7 @@ function Shell({ userEmail }) {
             </div>
 
             ${(() => {
-              const appsDoGrupo = APPS.filter((a) => a.grupo === homeGrupo);
+              const appsDoGrupo = APPS.filter((a) => a.grupo === homeGrupo && (!a.adminOnly || isAdmin));
               const usarLista = appsDoGrupo.length > LIMITE_GRADE;
               if (appsDoGrupo.length === 0) {
                 return html`<div style=${{ textAlign: 'center', fontSize: 12.5, color: 'var(--ink-soft)', fontStyle: 'italic', padding: '20px 0' }}>Nenhuma tela aqui ainda.</div>`;
@@ -2034,7 +2043,7 @@ function Shell({ userEmail }) {
           const app = APPS.find((a) => a.id === t.id);
           return html`
             <div key=${t.id} style=${{ display: activeId === t.id ? 'flex' : 'none', flexDirection: 'column', height: '100%' }}>
-              <${app.Comp} />
+              <${app.Comp} role=${role} />
             </div>
           `;
         })}
@@ -2048,15 +2057,36 @@ function Shell({ userEmail }) {
 // =====================================================================
 function Root() {
   const [session, setSession] = useState(undefined);
+  const [perfil, setPerfil] = useState(undefined);
   useEffect(() => {
     sb.auth.getSession().then(({ data }) => setSession(data.session || null));
     const { data: sub } = sb.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  useEffect(() => {
+    if (!session) { setPerfil(session === null ? null : undefined); return; }
+    sb.from('perfis').select('role, bloqueado').eq('id', session.user.id).single().then(({ data }) => {
+      setPerfil(data || { role: 'operador', bloqueado: false });
+    });
+  }, [session]);
+
   if (session === undefined) return html`<div style=${{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--ink-soft)' }}>Carregando…</div>`;
   if (session === null) return html`<${Login} />`;
-  return html`<${Shell} userEmail=${session.user.email} />`;
+  if (perfil === undefined) return html`<div style=${{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, color: 'var(--ink-soft)' }}>Carregando…</div>`;
+  if (perfil.bloqueado) {
+    return html`
+      <div style=${{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+        <div style=${{ textAlign: 'center', maxWidth: 340 }}>
+          <div style=${{ fontSize: 32, marginBottom: 12 }}>🔒</div>
+          <div style=${{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>Acesso bloqueado</div>
+          <div style=${{ fontSize: 13, color: 'var(--ink-soft)', marginBottom: 18 }}>Sua conta foi bloqueada por um administrador. Fale com quem gerencia o sistema se isso for um engano.</div>
+          <button style=${S.btnGhost} onClick=${() => sb.auth.signOut()}>Sair</button>
+        </div>
+      </div>
+    `;
+  }
+  return html`<${Shell} userEmail=${session.user.email} role=${perfil.role} />`;
 }
 
 render(html`<${Root} />`, document.getElementById('root'));
