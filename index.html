@@ -158,6 +158,20 @@ function ProdutoPicker({ produtos, value, onChange }) {
 // TELA: LANÇAMENTO
 // =====================================================================
 function LancamentoScreen() {
+  const [sub, setSub] = useState('novo'); // novo | historico
+  return html`
+    <div style=${S.topbar}><h1 style=${S.h1}>Lançamento</h1></div>
+    <div style=${{ padding: '0 28px' }}>
+      <div style=${{ display: 'flex', gap: 4, background: 'var(--bg)', padding: 3, borderRadius: 8, marginBottom: 4, maxWidth: 320 }}>
+        <button type="button" onClick=${() => setSub('novo')} style=${{ flex: 1, border: 'none', background: sub === 'novo' ? '#fff' : 'transparent', boxShadow: sub === 'novo' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none', padding: '7px 0', fontSize: 12.5, fontWeight: 600, color: sub === 'novo' ? 'var(--ink)' : 'var(--ink-soft)', cursor: 'pointer', borderRadius: 6 }}>Novo lançamento</button>
+        <button type="button" onClick=${() => setSub('historico')} style=${{ flex: 1, border: 'none', background: sub === 'historico' ? '#fff' : 'transparent', boxShadow: sub === 'historico' ? '0 1px 2px rgba(0,0,0,0.06)' : 'none', padding: '7px 0', fontSize: 12.5, fontWeight: 600, color: sub === 'historico' ? 'var(--ink)' : 'var(--ink-soft)', cursor: 'pointer', borderRadius: 6 }}>Histórico</button>
+      </div>
+    </div>
+    ${sub === 'novo' ? html`<${LancamentoForm} />` : html`<${LancamentoHistorico} />`}
+  `;
+}
+
+function LancamentoForm() {
   const [produtos, setProdutos] = useState(null);
   const [tipo, setTipo] = useState('entrada');
   const [codigo, setCodigo] = useState('');
@@ -230,8 +244,7 @@ function LancamentoScreen() {
   }
 
   return html`
-    <div style=${S.topbar}><h1 style=${S.h1}>Lançamento</h1></div>
-    <div style=${S.content}>
+    <div style=${{ padding: '18px 28px 28px' }}>
       ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
       ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
       <form style=${S.formCard} onSubmit=${submit}>
@@ -307,11 +320,117 @@ function LancamentoScreen() {
   `;
 }
 
+function LancamentoHistorico() {
+  const [movs, setMovs] = useState(null);
+  const [filtroTipo, setFiltroTipo] = useState('todos');
+  const [busca, setBusca] = useState('');
+  const [de, setDe] = useState('');
+  const [ate, setAte] = useState('');
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  function notify(m) { setMsg(m); setTimeout(() => setMsg(''), 3000); }
+
+  async function load() {
+    let q = sb.from('movements').select('*').order('data', { ascending: false }).order('created_at', { ascending: false }).limit(200);
+    if (de) q = q.gte('data', de);
+    if (ate) q = q.lte('data', ate);
+    const { data, error } = await q;
+    if (error) { setErr('Não foi possível carregar o histórico.'); return; }
+    setMovs(data || []);
+  }
+  useEffect(() => { load(); }, [de, ate]);
+
+  // ids que já têm um estorno dentro do que foi carregado
+  const idsEstornados = useMemo(() => new Set((movs || []).filter((m) => m.estorno_de_id).map((m) => m.estorno_de_id)), [movs]);
+
+  const listaFiltrada = useMemo(() => {
+    const q = normalize(busca);
+    return (movs || [])
+      .filter((m) => filtroTipo === 'todos' || m.tipo === filtroTipo)
+      .filter((m) => !q || normalize(m.produto).includes(q));
+  }, [movs, filtroTipo, busca]);
+
+  async function estornar(m) {
+    if (!window.confirm(`Estornar este lançamento de "${m.produto}"? Isso cria um lançamento contrário (${m.tipo === 'entrada' ? 'saída' : 'entrada'} de ${m.quantidade}) e não apaga o original.`)) return;
+    setBusy(true);
+    const { data: userData } = await sb.auth.getUser();
+    const payload = {
+      data: todayISO(),
+      tipo: m.tipo === 'entrada' ? 'saida' : 'entrada',
+      codigo: m.codigo,
+      produto: m.produto,
+      quantidade: m.quantidade,
+      valor: m.valor,
+      valor_total: m.valor_total,
+      marca: m.marca,
+      categoria: m.categoria,
+      nota_fiscal: `Estorno do lançamento de ${fmtDate(m.data)}`,
+      estorno_de_id: m.id,
+      criado_por: userData?.user?.email || '',
+    };
+    if (m.tipo === 'entrada') { payload.area_finalidade = 'ESTORNO'; payload.solicitante = ''; }
+    else { payload.lote = m.lote || ''; payload.validade = m.validade || null; payload.motivo_entrada = 'outro'; }
+    const { error } = await sb.from('movements').insert([payload]);
+    setBusy(false);
+    if (error) { setErr('Não foi possível estornar. Se for uma saída, confira se o produto tem saldo suficiente pra devolver.'); return; }
+    await load();
+    notify('Lançamento estornado.');
+  }
+
+  return html`
+    <div style=${{ padding: '18px 28px 28px' }}>
+      ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+      ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
+      <div style=${{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <select style=${{ ...S.input, width: 'auto' }} value=${filtroTipo} onChange=${(e) => setFiltroTipo(e.target.value)}>
+          <option value="todos">Entradas e saídas</option>
+          <option value="entrada">Só entradas</option>
+          <option value="saida">Só saídas</option>
+        </select>
+        <input style=${{ ...S.input, width: 200 }} placeholder="Buscar produto…" value=${busca} onInput=${(e) => setBusca(e.target.value)} />
+        <input type="date" style=${{ ...S.input, width: 'auto' }} value=${de} onInput=${(e) => setDe(e.target.value)} />
+        <span style=${{ fontSize: 12.5, color: 'var(--ink-soft)' }}>até</span>
+        <input type="date" style=${{ ...S.input, width: 'auto' }} value=${ate} onInput=${(e) => setAte(e.target.value)} />
+      </div>
+      <div style=${S.panel}>
+        <table style=${S.table}>
+          <thead><tr><th style=${S.th}>Data</th><th style=${S.th}>Tipo</th><th style=${S.th}>Produto</th><th style=${{ ...S.th, textAlign: 'right' }}>Qtd.</th><th style=${S.th}>Origem</th><th style=${{ ...S.th, textAlign: 'right' }}>Ações</th></tr></thead>
+          <tbody>
+            ${listaFiltrada.map((m) => {
+              const jaEstornado = idsEstornados.has(m.id);
+              const ehEstorno = !!m.estorno_de_id;
+              return html`
+                <tr key=${m.id} style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${fmtDate(m.data)}</td>
+                  <td style=${S.td}>${m.tipo === 'entrada' ? html`<${Badge} label="Entrada" fg="#15803D" bg="#F0FDF4" />` : html`<${Badge} label="Saída" fg="#B91C1C" bg="#FEF2F2" />`}</td>
+                  <td style=${{ ...S.td, fontWeight: 500 }}>${m.produto}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}>${m.quantidade}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)', fontSize: 12 }}>${ehEstorno ? 'Estorno' : (m.area_finalidade || m.motivo_entrada || '—')}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}>
+                    ${jaEstornado ? html`<span style=${{ fontSize: 11.5, color: 'var(--ink-soft)' }}>já estornado</span>`
+                      : html`<button style=${S.linkBtn} onClick=${() => estornar(m)} disabled=${busy}>Estornar</button>`}
+                  </td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+        ${movs === null && html`<div style=${S.empty}>Carregando…</div>`}
+        ${movs && listaFiltrada.length === 0 && html`<div style=${S.empty}>Nenhum lançamento encontrado com esses filtros.</div>`}
+      </div>
+      <div style=${{ fontSize: 11.5, color: 'var(--ink-soft)', marginTop: 10 }}>Mostrando os últimos 200 lançamentos do período selecionado.</div>
+    </div>
+  `;
+}
+
 // =====================================================================
 // TELA: ESTOQUE (lista de produtos, saldo, cadastro/edição)
 // =====================================================================
 function getMinimo(p) { return p.estoque_minimo != null ? Number(p.estoque_minimo) : 5; }
 function isLow(p) { return (Number(p.saldo) || 0) <= getMinimo(p); }
+
 
 function EstoqueScreen({ role }) {
   const isAdmin = role === 'admin';
