@@ -308,6 +308,218 @@ function LancamentoScreen() {
 }
 
 // =====================================================================
+// TELA: ESTOQUE (lista de produtos, saldo, cadastro/edição)
+// =====================================================================
+function getMinimo(p) { return p.estoque_minimo != null ? Number(p.estoque_minimo) : 5; }
+function isLow(p) { return (Number(p.saldo) || 0) <= getMinimo(p); }
+
+function EstoqueScreen() {
+  const [produtos, setProdutos] = useState(null);
+  const [categorias, setCategorias] = useState(null);
+  const [unidades, setUnidades] = useState(null);
+  const [fornecedores, setFornecedores] = useState(null);
+
+  const [filtroCategoria, setFiltroCategoria] = useState('todos');
+  const [busca, setBusca] = useState('');
+  const [soBaixo, setSoBaixo] = useState(false);
+
+  const [editando, setEditando] = useState(null); // null = lista
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+
+  async function loadProdutos() {
+    const { data, error } = await sb.from('product_balances').select('*');
+    if (error) { setErr('Não foi possível carregar o estoque.'); return; }
+    setProdutos(data || []);
+  }
+  async function loadApoio() {
+    const [{ data: cat }, { data: uni }, { data: forn }] = await Promise.all([
+      sb.from('categorias').select('*').order('nome'),
+      sb.from('unidades').select('*').order('nome'),
+      sb.from('fornecedores').select('*').order('nome'),
+    ]);
+    setCategorias(cat || []);
+    setUnidades(uni || []);
+    setFornecedores(forn || []);
+  }
+  useEffect(() => { loadProdutos(); loadApoio(); }, []);
+
+  function nomeCategoria(chave) {
+    const c = (categorias || []).find((x) => x.chave === chave);
+    return c ? c.nome : (chave || '—');
+  }
+
+  const listaFiltrada = useMemo(() => {
+    const q = normalize(busca);
+    return (produtos || [])
+      .filter((p) => filtroCategoria === 'todos' || p.categoria === filtroCategoria)
+      .filter((p) => !soBaixo || isLow(p))
+      .filter((p) => !q || normalize(p.produto).includes(q) || String(p.codigo).includes(busca))
+      .sort((a, b) => a.produto.localeCompare(b.produto));
+  }, [produtos, filtroCategoria, busca, soBaixo]);
+
+  const stats = useMemo(() => {
+    if (!produtos) return { total: 0, baixo: 0, valorTotal: 0 };
+    let baixo = 0, valorTotal = 0;
+    produtos.forEach((p) => { if (isLow(p)) baixo++; valorTotal += (Number(p.saldo) || 0) * (Number(p.custo_medio) || 0); });
+    return { total: produtos.length, baixo, valorTotal };
+  }, [produtos]);
+
+  function novoProduto() {
+    setEditando({ produto: '', categoria: (categorias || [])[0]?.chave || '', unidade: (unidades || [])[0]?.sigla || 'un', fornecedor_id: '', codigo_barras: '', estoque_minimo: '5', e_ferramenta: false });
+  }
+  function editarProduto(p) {
+    setEditando({
+      codigo: p.codigo, produto: p.produto, categoria: p.categoria, unidade: p.unidade || 'un',
+      fornecedor_id: p.fornecedor_id || '', codigo_barras: p.codigo_barras || '',
+      estoque_minimo: String(getMinimo(p)), e_ferramenta: !!p.e_ferramenta,
+    });
+  }
+
+  async function salvarProduto(ev) {
+    ev.preventDefault();
+    if (!editando.produto.trim() || !editando.categoria) return;
+    setBusy(true);
+    const payload = {
+      produto: editando.produto.trim().toUpperCase(),
+      categoria: editando.categoria,
+      unidade: editando.unidade,
+      fornecedor_id: editando.fornecedor_id || null,
+      codigo_barras: editando.codigo_barras.trim() || null,
+      estoque_minimo: editando.estoque_minimo === '' ? 5 : Number(editando.estoque_minimo),
+      e_ferramenta: editando.e_ferramenta,
+    };
+    let error;
+    if (editando.codigo) {
+      ({ error } = await sb.from('products').update(payload).eq('codigo', editando.codigo));
+    } else {
+      const proximoCodigo = Math.max(0, ...(produtos || []).map((p) => p.codigo)) + 1;
+      const { data: userData } = await sb.auth.getUser();
+      payload.codigo = proximoCodigo;
+      payload.criado_por = userData?.user?.email || '';
+      ({ error } = await sb.from('products').insert([payload]));
+    }
+    setBusy(false);
+    if (error) { setErr('Não foi possível salvar o produto.'); return; }
+    await loadProdutos();
+    setMsg(editando.codigo ? 'Produto atualizado.' : 'Produto cadastrado.');
+    setTimeout(() => setMsg(''), 3000);
+    setEditando(null);
+  }
+
+  if (editando) {
+    return html`
+      <div style=${S.topbar}><button style=${{ ...S.linkBtn, marginRight: 10 }} onClick=${() => setEditando(null)}>← Estoque</button><h1 style=${S.h1}>${editando.codigo ? 'Editar produto' : 'Novo produto'}</h1></div>
+      <div style=${S.content}>
+        <form style=${S.formCard} onSubmit=${salvarProduto}>
+          <label style=${S.label}>Nome do produto</label>
+          <input style=${{ ...S.input, textTransform: 'uppercase' }} value=${editando.produto} onInput=${(e) => setEditando({ ...editando, produto: e.target.value })} required autofocus />
+          <div style=${S.row2}>
+            <div><label style=${S.label}>Categoria</label>
+              <select style=${S.input} value=${editando.categoria} onChange=${(e) => setEditando({ ...editando, categoria: e.target.value })} required>
+                ${(categorias || []).map((c) => html`<option value=${c.chave}>${c.nome}</option>`)}
+              </select>
+            </div>
+            <div><label style=${S.label}>Unidade</label>
+              <select style=${S.input} value=${editando.unidade} onChange=${(e) => setEditando({ ...editando, unidade: e.target.value })}>
+                ${(unidades || []).map((u) => html`<option value=${u.sigla}>${u.nome} (${u.sigla})</option>`)}
+              </select>
+            </div>
+          </div>
+          <div style=${S.row2}>
+            <div><label style=${S.label}>Fornecedor</label>
+              <select style=${S.input} value=${editando.fornecedor_id} onChange=${(e) => setEditando({ ...editando, fornecedor_id: e.target.value })}>
+                <option value="">Sem fornecedor</option>
+                ${(fornecedores || []).map((f) => html`<option value=${f.id}>${f.nome}</option>`)}
+              </select>
+            </div>
+            <div><label style=${S.label}>Estoque mínimo</label>
+              <input type="number" min="0" step="1" style=${S.input} value=${editando.estoque_minimo} onInput=${(e) => setEditando({ ...editando, estoque_minimo: e.target.value })} />
+            </div>
+          </div>
+          <label style=${S.label}>Código de barras</label>
+          <input style=${S.input} value=${editando.codigo_barras} onInput=${(e) => setEditando({ ...editando, codigo_barras: e.target.value })} placeholder="opcional" />
+          <label style=${{ display: 'flex', alignItems: 'flex-start', gap: 8, fontSize: 12.5, color: 'var(--ink-soft)', cursor: 'pointer', marginTop: 14 }}>
+            <input type="checkbox" checked=${editando.e_ferramenta} onChange=${(e) => setEditando({ ...editando, e_ferramenta: e.target.checked })} style=${{ marginTop: 2 }} />
+            <span>É ferramenta/equipamento (não se consome)?</span>
+          </label>
+          <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+            <button type="button" style=${S.btnGhost} onClick=${() => setEditando(null)}>Cancelar</button>
+            <button type="submit" style=${S.btnPrimary} disabled=${busy}>${editando.codigo ? 'Salvar alterações' : 'Cadastrar'}</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style=${S.topbar}><h1 style=${S.h1}>Estoque</h1><button style=${S.btnPrimary} onClick=${novoProduto}>+ Novo produto</button></div>
+    <div style=${S.content}>
+      ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+      ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
+
+      <div style=${{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12, marginBottom: 18, maxWidth: 640 }}>
+        <div style=${{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style=${{ fontSize: 11.5, color: 'var(--ink-soft)', fontWeight: 500 }}>Produtos cadastrados</div>
+          <div style=${{ fontSize: 22, fontWeight: 700, marginTop: 4 }}>${stats.total}</div>
+        </div>
+        <div style=${{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', cursor: 'pointer' }} onClick=${() => setSoBaixo(true)}>
+          <div style=${{ fontSize: 11.5, color: 'var(--ink-soft)', fontWeight: 500 }}>Estoque baixo</div>
+          <div style=${{ fontSize: 22, fontWeight: 700, marginTop: 4, color: stats.baixo > 0 ? 'var(--warning)' : 'var(--ink)' }}>${stats.baixo}</div>
+        </div>
+        <div style=${{ background: '#fff', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px' }}>
+          <div style=${{ fontSize: 11.5, color: 'var(--ink-soft)', fontWeight: 500 }}>Valor total em estoque</div>
+          <div style=${{ fontSize: 20, fontWeight: 700, marginTop: 4, color: 'var(--accent)' }}>${fmtBRL(stats.valorTotal)}</div>
+        </div>
+      </div>
+
+      <div style=${{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+        <select style=${{ ...S.input, width: 'auto' }} value=${filtroCategoria} onChange=${(e) => setFiltroCategoria(e.target.value)}>
+          <option value="todos">Todas as categorias</option>
+          ${(categorias || []).map((c) => html`<option value=${c.chave}>${c.nome}</option>`)}
+        </select>
+        <input style=${{ ...S.input, width: 220 }} placeholder="Buscar produto…" value=${busca} onInput=${(e) => setBusca(e.target.value)} />
+        <label style=${{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: 'var(--ink-soft)', cursor: 'pointer' }}>
+          <input type="checkbox" checked=${soBaixo} onChange=${(e) => setSoBaixo(e.target.checked)} /> Só estoque baixo
+        </label>
+      </div>
+
+      <div style=${S.panel}>
+        <table style=${S.table}>
+          <thead><tr>
+            <th style=${S.th}>Código</th><th style=${S.th}>Produto</th><th style=${S.th}>Categoria</th>
+            <th style=${S.th}>Fornecedor</th><th style=${{ ...S.th, textAlign: 'right' }}>Saldo</th>
+            <th style=${{ ...S.th, textAlign: 'right' }}>Custo médio</th><th style=${S.th}>Status</th>
+          </tr></thead>
+          <tbody>
+            ${listaFiltrada.map((p) => {
+              const low = isLow(p);
+              return html`
+                <tr style=${S.tr} onClick=${() => editarProduto(p)}>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>#${String(p.codigo).padStart(3, '0')}</td>
+                  <td style=${{ ...S.td, fontWeight: 500 }}>
+                    ${p.produto}
+                    ${p.e_ferramenta && html`<span style=${{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: '1px 6px', borderRadius: 999, background: '#EEF2FF', color: '#4338CA' }}>FERRAMENTA</span>`}
+                  </td>
+                  <td style=${S.td}><span style=${{ fontSize: 11.5, color: 'var(--ink-soft)', background: 'var(--bg)', padding: '3px 8px', borderRadius: 5, fontWeight: 500 }}>${nomeCategoria(p.categoria)}</span></td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${p.fornecedor_nome || '—'}</td>
+                  <td style=${{ ...S.td, textAlign: 'right', fontWeight: 600, color: low ? 'var(--danger)' : 'var(--ink)' }}>${Number(p.saldo) || 0} ${p.unidade || ''}</td>
+                  <td style=${{ ...S.td, textAlign: 'right', color: 'var(--ink-soft)' }}>${p.custo_medio ? fmtBRL(p.custo_medio) : '—'}</td>
+                  <td style=${S.td}>${low ? html`<${Badge} label="Estoque baixo" fg="#B45309" bg="#FFFBEB" />` : html`<${Badge} label="Normal" fg="#15803D" bg="#F0FDF4" />`}</td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+        ${produtos === null && html`<div style=${S.empty}>Carregando…</div>`}
+        ${produtos && listaFiltrada.length === 0 && html`<div style=${S.empty}>Nenhum produto encontrado com esses filtros.</div>`}
+      </div>
+    </div>
+  `;
+}
+
+// =====================================================================
 // FROTA — Equipamentos e Manutenções (nativos)
 // =====================================================================
 const TIPOS_EQUIP = [['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'], ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro']];
@@ -649,10 +861,11 @@ function LegacyFrame() {
 // CASCA: tela inicial + abas
 // =====================================================================
 const APPS = [
+  { id: 'estoque', title: 'Estoque', icon: '📦', Comp: EstoqueScreen },
   { id: 'lancamento', title: 'Lançamento', icon: '🧾', Comp: LancamentoScreen },
   { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen },
   { id: 'manutencoes', title: 'Manutenções', icon: '🛠️', Comp: ManutencoesScreen },
-  { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '📦', Comp: LegacyFrame },
+  { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame },
 ];
 
 function Shell({ userEmail }) {
