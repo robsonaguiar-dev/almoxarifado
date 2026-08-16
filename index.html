@@ -520,6 +520,254 @@ function EstoqueScreen() {
 }
 
 // =====================================================================
+// TELA: CADASTROS (fornecedores, categorias, unidades, áreas)
+// =====================================================================
+function slugify(s) {
+  return normalize(s).replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+const CADASTRO_TABS = [
+  ['fornecedores', 'Fornecedores'],
+  ['categorias', 'Categorias'],
+  ['unidades', 'Unidades'],
+  ['areas', 'Áreas'],
+];
+
+function CadastrosScreen() {
+  const [sub, setSub] = useState('fornecedores');
+  const [fornecedores, setFornecedores] = useState(null);
+  const [categorias, setCategorias] = useState(null);
+  const [unidades, setUnidades] = useState(null);
+  const [areas, setAreas] = useState(null);
+  const [editando, setEditando] = useState(null); // { tipo, ...campos }
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [msg, setMsg] = useState('');
+
+  async function loadFornecedores() { const { data } = await sb.from('fornecedores').select('*').order('nome'); setFornecedores(data || []); }
+  async function loadCategorias() { const { data } = await sb.from('categorias').select('*').order('nome'); setCategorias(data || []); }
+  async function loadUnidades() { const { data } = await sb.from('unidades').select('*').order('nome'); setUnidades(data || []); }
+  async function loadAreas() { const { data } = await sb.from('areas').select('*').order('nome'); setAreas(data || []); }
+  useEffect(() => { loadFornecedores(); loadCategorias(); loadUnidades(); loadAreas(); }, []);
+
+  function notify(m) { setMsg(m); setTimeout(() => setMsg(''), 3000); }
+
+  // ---------- fornecedores ----------
+  function novoFornecedor() { setEditando({ tipo: 'fornecedores', nome: '', contato: '', telefone: '', email: '' }); }
+  function editarFornecedor(f) { setEditando({ tipo: 'fornecedores', id: f.id, nome: f.nome, contato: f.contato || '', telefone: f.telefone || '', email: f.email || '' }); }
+  async function salvarFornecedor() {
+    const payload = { nome: editando.nome.trim().toUpperCase(), contato: editando.contato.trim(), telefone: editando.telefone.trim(), email: editando.email.trim() };
+    if (editando.id) return sb.from('fornecedores').update(payload).eq('id', editando.id);
+    return sb.from('fornecedores').insert([payload]);
+  }
+  async function excluirFornecedor(f) {
+    const { data } = await sb.from('products').select('codigo').eq('fornecedor_id', f.id).limit(1);
+    if (data && data.length > 0) { setErr(`Não é possível excluir: existem produtos usando o fornecedor "${f.nome}".`); return; }
+    if (!window.confirm(`Excluir o fornecedor "${f.nome}"?`)) return;
+    const { error } = await sb.from('fornecedores').delete().eq('id', f.id);
+    if (error) { setErr('Não foi possível excluir.'); return; }
+    await loadFornecedores(); notify('Fornecedor excluído.');
+  }
+
+  // ---------- categorias ----------
+  function novaCategoria() { setEditando({ tipo: 'categorias', nome: '' }); }
+  function editarCategoria(c) { setEditando({ tipo: 'categorias', id: c.id, nome: c.nome, chave: c.chave }); }
+  async function salvarCategoria() {
+    const nome = editando.nome.trim().toUpperCase();
+    if (editando.id) return sb.from('categorias').update({ nome }).eq('id', editando.id);
+    const { data: userData } = await sb.auth.getUser();
+    return sb.from('categorias').insert([{ chave: slugify(editando.nome), nome, criado_por: userData?.user?.email || '' }]);
+  }
+  async function excluirCategoria(c) {
+    const { data } = await sb.from('products').select('codigo').eq('categoria', c.chave).limit(1);
+    if (data && data.length > 0) { setErr(`Não é possível excluir: existem produtos usando a categoria "${c.nome}".`); return; }
+    if (!window.confirm(`Excluir a categoria "${c.nome}"?`)) return;
+    const { error } = await sb.from('categorias').delete().eq('id', c.id);
+    if (error) { setErr('Não foi possível excluir.'); return; }
+    await loadCategorias(); notify('Categoria excluída.');
+  }
+
+  // ---------- unidades ----------
+  function novaUnidade() { setEditando({ tipo: 'unidades', sigla: '', nome: '' }); }
+  function editarUnidade(u) { setEditando({ tipo: 'unidades', id: u.id, sigla: u.sigla, nome: u.nome }); }
+  async function salvarUnidade() {
+    const nome = editando.nome.trim().toUpperCase();
+    if (editando.id) return sb.from('unidades').update({ nome }).eq('id', editando.id);
+    const { data: userData } = await sb.auth.getUser();
+    return sb.from('unidades').insert([{ sigla: editando.sigla.trim().toUpperCase(), nome, criado_por: userData?.user?.email || '' }]);
+  }
+  async function excluirUnidade(u) {
+    const { data } = await sb.from('products').select('codigo').eq('unidade', u.sigla).limit(1);
+    if (data && data.length > 0) { setErr(`Não é possível excluir: existem produtos usando a unidade "${u.sigla}".`); return; }
+    if (!window.confirm(`Excluir a unidade "${u.sigla}"?`)) return;
+    const { error } = await sb.from('unidades').delete().eq('id', u.id);
+    if (error) { setErr('Não foi possível excluir.'); return; }
+    await loadUnidades(); notify('Unidade excluída.');
+  }
+
+  // ---------- áreas ----------
+  function novaArea() { setEditando({ tipo: 'areas', nome: '' }); }
+  function editarArea(a) { setEditando({ tipo: 'areas', id: a.id, nome: a.nome, chave: a.chave }); }
+  async function salvarArea() {
+    const nome = editando.nome.trim().toUpperCase();
+    if (editando.id) return sb.from('areas').update({ nome }).eq('id', editando.id);
+    const { data: userData } = await sb.auth.getUser();
+    return sb.from('areas').insert([{ chave: slugify(editando.nome), nome, criado_por: userData?.user?.email || '' }]);
+  }
+  async function excluirArea(a) {
+    const { data } = await sb.from('movements').select('id').eq('area_finalidade', a.nome).limit(1);
+    if (data && data.length > 0) { setErr(`Não é possível excluir: já existem saídas lançadas com a área "${a.nome}".`); return; }
+    if (!window.confirm(`Excluir a área "${a.nome}"?`)) return;
+    const { error } = await sb.from('areas').delete().eq('id', a.id);
+    if (error) { setErr('Não foi possível excluir.'); return; }
+    await loadAreas(); notify('Área excluída.');
+  }
+
+  async function submit(ev) {
+    ev.preventDefault();
+    if (!editando.nome.trim()) return;
+    if (editando.tipo === 'unidades' && !editando.id && !editando.sigla.trim()) return;
+    setBusy(true);
+    let result;
+    if (editando.tipo === 'fornecedores') result = await salvarFornecedor();
+    else if (editando.tipo === 'categorias') result = await salvarCategoria();
+    else if (editando.tipo === 'unidades') result = await salvarUnidade();
+    else result = await salvarArea();
+    setBusy(false);
+    if (result?.error) { setErr('Não foi possível salvar.'); return; }
+    if (editando.tipo === 'fornecedores') await loadFornecedores();
+    else if (editando.tipo === 'categorias') await loadCategorias();
+    else if (editando.tipo === 'unidades') await loadUnidades();
+    else await loadAreas();
+    notify(editando.id ? 'Atualizado.' : 'Cadastrado.');
+    setEditando(null);
+  }
+
+  if (editando) {
+    const titulos = { fornecedores: 'fornecedor', categorias: 'categoria', unidades: 'unidade', areas: 'área' };
+    return html`
+      <div style=${S.topbar}><button style=${{ ...S.linkBtn, marginRight: 10 }} onClick=${() => setEditando(null)}>← Cadastros</button><h1 style=${S.h1}>${editando.id ? 'Editar' : 'Novo(a)'} ${titulos[editando.tipo]}</h1></div>
+      <div style=${S.content}>
+        <form style=${S.formCard} onSubmit=${submit}>
+          ${editando.tipo === 'unidades' && html`
+            <label style=${S.label}>Sigla</label>
+            <input style=${{ ...S.input, textTransform: 'uppercase' }} value=${editando.sigla} onInput=${(e) => setEditando({ ...editando, sigla: e.target.value })} placeholder="ex: M" maxlength="6" required disabled=${!!editando.id} autofocus />
+          `}
+          <label style=${S.label}>Nome</label>
+          <input style=${{ ...S.input, textTransform: 'uppercase' }} value=${editando.nome} onInput=${(e) => setEditando({ ...editando, nome: e.target.value })} required autofocus=${editando.tipo !== 'unidades'} />
+          ${editando.tipo === 'fornecedores' && html`
+            <label style=${S.label}>Pessoa de contato</label>
+            <input style=${S.input} value=${editando.contato} onInput=${(e) => setEditando({ ...editando, contato: e.target.value })} placeholder="opcional" />
+            <div style=${S.row2}>
+              <div><label style=${S.label}>Telefone</label><input style=${S.input} value=${editando.telefone} onInput=${(e) => setEditando({ ...editando, telefone: e.target.value })} placeholder="opcional" /></div>
+              <div><label style=${S.label}>E-mail</label><input type="email" style=${S.input} value=${editando.email} onInput=${(e) => setEditando({ ...editando, email: e.target.value })} placeholder="opcional" /></div>
+            </div>
+          `}
+          <div style=${{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
+            <button type="button" style=${S.btnGhost} onClick=${() => setEditando(null)}>Cancelar</button>
+            <button type="submit" style=${S.btnPrimary} disabled=${busy}>${editando.id ? 'Salvar alterações' : 'Cadastrar'}</button>
+          </div>
+        </form>
+      </div>
+    `;
+  }
+
+  return html`
+    <div style=${S.topbar}>
+      <h1 style=${S.h1}>Cadastros</h1>
+      <button style=${S.btnPrimary} onClick=${() => (sub === 'fornecedores' ? novoFornecedor() : sub === 'categorias' ? novaCategoria() : sub === 'unidades' ? novaUnidade() : novaArea())}>+ Novo(a) ${CADASTRO_TABS.find((t) => t[0] === sub)[1].replace(/s$/, '')}</button>
+    </div>
+    <div style=${S.content}>
+      ${err && html`<div style=${S.errBox}><span>${err}</span><button style=${S.linkBtn} onClick=${() => setErr('')}>fechar</button></div>`}
+      ${msg && html`<div style=${{ ...S.errBox, background: 'var(--success-soft)', border: '1px solid #BBF7D0', color: 'var(--success)' }}>${msg}</div>`}
+
+      <div style=${{ display: 'flex', gap: 4, background: 'var(--bg)', padding: 3, borderRadius: 8, marginBottom: 16, maxWidth: 420 }}>
+        ${CADASTRO_TABS.map(([v, l]) => html`
+          <button type="button" onClick=${() => setSub(v)} style=${{ flex: 1, border: 'none', background: sub === v ? '#fff' : 'transparent', boxShadow: sub === v ? '0 1px 2px rgba(0,0,0,0.06)' : 'none', padding: '7px 0', fontSize: 12.5, fontWeight: 600, color: sub === v ? 'var(--ink)' : 'var(--ink-soft)', cursor: 'pointer', borderRadius: 6 }}>${l}</button>
+        `)}
+      </div>
+
+      ${sub === 'fornecedores' && html`
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Nome</th><th style=${S.th}>Contato</th><th style=${S.th}>Telefone</th><th style=${S.th}>E-mail</th><th style=${{ ...S.th, textAlign: 'right' }}>Ações</th></tr></thead>
+            <tbody>
+              ${fornecedores === null ? null : fornecedores.map((f) => html`
+                <tr style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, fontWeight: 500, cursor: 'pointer' }} onClick=${() => editarFornecedor(f)}>${f.nome}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${f.contato || '—'}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${f.telefone || '—'}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${f.email || '—'}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}><button style=${S.linkBtn} onClick=${() => editarFornecedor(f)}>Editar</button><button style=${{ ...S.linkBtn, color: 'var(--danger)', marginLeft: 10 }} onClick=${() => excluirFornecedor(f)}>Excluir</button></td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+          ${fornecedores === null && html`<div style=${S.empty}>Carregando…</div>`}
+          ${fornecedores && fornecedores.length === 0 && html`<div style=${S.empty}>Nenhum fornecedor cadastrado ainda.</div>`}
+        </div>
+      `}
+
+      ${sub === 'categorias' && html`
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Nome</th><th style=${S.th}>Chave</th><th style=${{ ...S.th, textAlign: 'right' }}>Ações</th></tr></thead>
+            <tbody>
+              ${categorias === null ? null : categorias.map((c) => html`
+                <tr style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, fontWeight: 500, cursor: 'pointer' }} onClick=${() => editarCategoria(c)}>${c.nome}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)', fontFamily: 'monospace', fontSize: 12 }}>${c.chave}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}><button style=${S.linkBtn} onClick=${() => editarCategoria(c)}>Editar</button><button style=${{ ...S.linkBtn, color: 'var(--danger)', marginLeft: 10 }} onClick=${() => excluirCategoria(c)}>Excluir</button></td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+          ${categorias === null && html`<div style=${S.empty}>Carregando…</div>`}
+          ${categorias && categorias.length === 0 && html`<div style=${S.empty}>Nenhuma categoria cadastrada ainda.</div>`}
+        </div>
+      `}
+
+      ${sub === 'unidades' && html`
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Sigla</th><th style=${S.th}>Nome</th><th style=${{ ...S.th, textAlign: 'right' }}>Ações</th></tr></thead>
+            <tbody>
+              ${unidades === null ? null : unidades.map((u) => html`
+                <tr style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, fontWeight: 700, fontFamily: 'monospace', cursor: 'pointer' }} onClick=${() => editarUnidade(u)}>${u.sigla}</td>
+                  <td style=${{ ...S.td, color: 'var(--ink-soft)' }}>${u.nome}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}><button style=${S.linkBtn} onClick=${() => editarUnidade(u)}>Editar</button><button style=${{ ...S.linkBtn, color: 'var(--danger)', marginLeft: 10 }} onClick=${() => excluirUnidade(u)}>Excluir</button></td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+          ${unidades === null && html`<div style=${S.empty}>Carregando…</div>`}
+          ${unidades && unidades.length === 0 && html`<div style=${S.empty}>Nenhuma unidade cadastrada ainda.</div>`}
+        </div>
+      `}
+
+      ${sub === 'areas' && html`
+        <div style=${S.panel}>
+          <table style=${S.table}>
+            <thead><tr><th style=${S.th}>Nome</th><th style=${{ ...S.th, textAlign: 'right' }}>Ações</th></tr></thead>
+            <tbody>
+              ${areas === null ? null : areas.map((a) => html`
+                <tr style=${{ ...S.tr, cursor: 'default' }}>
+                  <td style=${{ ...S.td, fontWeight: 500, cursor: 'pointer' }} onClick=${() => editarArea(a)}>${a.nome}</td>
+                  <td style=${{ ...S.td, textAlign: 'right' }}><button style=${S.linkBtn} onClick=${() => editarArea(a)}>Editar</button><button style=${{ ...S.linkBtn, color: 'var(--danger)', marginLeft: 10 }} onClick=${() => excluirArea(a)}>Excluir</button></td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+          ${areas === null && html`<div style=${S.empty}>Carregando…</div>`}
+          ${areas && areas.length === 0 && html`<div style=${S.empty}>Nenhuma área cadastrada ainda.</div>`}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+// =====================================================================
 // FROTA — Equipamentos e Manutenções (nativos)
 // =====================================================================
 const TIPOS_EQUIP = [['carro', 'Carro'], ['van', 'Van'], ['trator', 'Trator'], ['caminhao', 'Caminhão'], ['maquina_de_corte', 'Máquina de corte'], ['rocadeira', 'Roçadeira'], ['bomba', 'Bomba'], ['outro', 'Outro']];
@@ -863,6 +1111,7 @@ function LegacyFrame() {
 const APPS = [
   { id: 'estoque', title: 'Estoque', icon: '📦', Comp: EstoqueScreen },
   { id: 'lancamento', title: 'Lançamento', icon: '🧾', Comp: LancamentoScreen },
+  { id: 'cadastros', title: 'Cadastros', icon: '🗄️', Comp: CadastrosScreen },
   { id: 'equipamentos', title: 'Equipamentos', icon: '🚗', Comp: EquipamentosScreen },
   { id: 'manutencoes', title: 'Manutenções', icon: '🛠️', Comp: ManutencoesScreen },
   { id: 'legado', title: 'Almoxarifado (sistema completo)', icon: '🗂️', Comp: LegacyFrame },
