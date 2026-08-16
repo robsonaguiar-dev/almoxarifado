@@ -1343,6 +1343,7 @@ const LIMITE_GRADE = 6; // acima disso, o grupo vira lista em vez de grade de í
 function Shell({ userEmail }) {
   const [tabs, setTabs] = useState([]); // [{id, title, icon}]
   const [activeId, setActiveId] = useState(null); // null = home
+  const [homeGrupo, setHomeGrupo] = useState('funcoes'); // categoria ativa na tela inicial
 
   function openApp(app) {
     setTabs((prev) => (prev.some((t) => t.id === app.id) ? prev : [...prev, { id: app.id, title: app.title, icon: app.icon }]));
@@ -1386,40 +1387,49 @@ function Shell({ userEmail }) {
         <div style=${{ display: activeId === null ? 'block' : 'none', height: '100%', overflowY: 'auto' }}>
           <div style=${{ padding: '40px 28px', maxWidth: 760, margin: '0 auto' }}>
             <h1 style=${{ fontSize: 22, fontWeight: 700, margin: '0 0 4px', textAlign: 'center' }}>Início</h1>
-            <p style=${{ fontSize: 13, color: 'var(--ink-soft)', margin: '0 0 32px', textAlign: 'center' }}>Dê duplo clique numa opção para abrir.</p>
+            <p style=${{ fontSize: 13, color: 'var(--ink-soft)', margin: '0 0 24px', textAlign: 'center' }}>Dê duplo clique numa opção para abrir.</p>
 
-            ${GRUPOS.map((g) => {
-              const appsDoGrupo = APPS.filter((a) => a.grupo === g.id);
+            <div style=${{ display: 'flex', justifyContent: 'center', gap: 28, borderBottom: '1px solid var(--border)', marginBottom: 28 }}>
+              ${GRUPOS.map((g) => html`
+                <button
+                  key=${g.id}
+                  onClick=${() => setHomeGrupo(g.id)}
+                  style=${{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px 12px', fontSize: 14, fontWeight: 600, color: homeGrupo === g.id ? 'var(--accent)' : 'var(--ink-soft)', borderBottom: homeGrupo === g.id ? '2px solid var(--accent)' : '2px solid transparent', marginBottom: -1 }}
+                >${g.titulo}</button>
+              `)}
+            </div>
+
+            ${(() => {
+              const appsDoGrupo = APPS.filter((a) => a.grupo === homeGrupo);
               const usarLista = appsDoGrupo.length > LIMITE_GRADE;
+              if (appsDoGrupo.length === 0) {
+                return html`<div style=${{ textAlign: 'center', fontSize: 12.5, color: 'var(--ink-soft)', fontStyle: 'italic', padding: '20px 0' }}>Nenhuma tela aqui ainda.</div>`;
+              }
+              if (usarLista) {
+                return html`
+                  <div style=${{ maxWidth: 420, margin: '0 auto', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
+                    ${appsDoGrupo.map((app) => html`
+                      <div key=${app.id} ondblclick=${() => openApp(app)}
+                        style=${{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: '1px solid var(--bg)', cursor: 'pointer', userSelect: 'none' }}>
+                        <span style=${{ fontSize: 18 }}>${app.icon}</span>
+                        <span style=${{ fontSize: 13.5, fontWeight: 500 }}>${app.title}</span>
+                      </div>
+                    `)}
+                  </div>
+                `;
+              }
               return html`
-                <div key=${g.id} style=${{ marginBottom: 34 }}>
-                  <div style=${{ fontSize: 11.5, fontWeight: 700, color: 'var(--ink-soft)', textTransform: 'uppercase', letterSpacing: '0.05em', textAlign: 'center', marginBottom: 14 }}>${g.titulo}</div>
-                  ${appsDoGrupo.length === 0 ? html`
-                    <div style=${{ textAlign: 'center', fontSize: 12.5, color: 'var(--ink-soft)', fontStyle: 'italic' }}>Nenhuma tela aqui ainda.</div>
-                  ` : usarLista ? html`
-                    <div style=${{ maxWidth: 420, margin: '0 auto', border: '1px solid var(--border)', borderRadius: 10, overflow: 'hidden', background: '#fff' }}>
-                      ${appsDoGrupo.map((app) => html`
-                        <div key=${app.id} ondblclick=${() => openApp(app)}
-                          style=${{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', borderBottom: '1px solid var(--bg)', cursor: 'pointer', userSelect: 'none' }}>
-                          <span style=${{ fontSize: 18 }}>${app.icon}</span>
-                          <span style=${{ fontSize: 13.5, fontWeight: 500 }}>${app.title}</span>
-                        </div>
-                      `)}
+                <div style=${{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 16 }}>
+                  ${appsDoGrupo.map((app) => html`
+                    <div key=${app.id} ondblclick=${() => openApp(app)}
+                      style=${{ width: 150, background: '#fff', border: '1px solid var(--border)', borderRadius: 12, padding: '22px 12px', textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}>
+                      <div style=${{ fontSize: 30, marginBottom: 10 }}>${app.icon}</div>
+                      <div style=${{ fontSize: 13, fontWeight: 600 }}>${app.title}</div>
                     </div>
-                  ` : html`
-                    <div style=${{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 16 }}>
-                      ${appsDoGrupo.map((app) => html`
-                        <div key=${app.id} ondblclick=${() => openApp(app)}
-                          style=${{ width: 150, background: '#fff', border: '1px solid var(--border)', borderRadius: 12, padding: '22px 12px', textAlign: 'center', cursor: 'pointer', userSelect: 'none' }}>
-                          <div style=${{ fontSize: 30, marginBottom: 10 }}>${app.icon}</div>
-                          <div style=${{ fontSize: 13, fontWeight: 600 }}>${app.title}</div>
-                        </div>
-                      `)}
-                    </div>
-                  `}
+                  `)}
                 </div>
               `;
-            })}
+            })()}
           </div>
         </div>
 
